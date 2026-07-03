@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
+from app.routers import municipalities
 
 settings = get_settings()
 
@@ -38,3 +39,6 @@ async def health():
         "version": "1.0.0",
         "models_loaded": False,
     }
+
+# Include routers
+app.include_router(municipalities.router, prefix=settings.api_v1_prefix)
