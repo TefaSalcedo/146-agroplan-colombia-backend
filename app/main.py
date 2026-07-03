@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
-from app.routers import municipalities
+from app.routers import municipalities, weather
 
 settings = get_settings()
 
@@ -42,3 +42,4 @@ async def health():
 
 # Include routers
 app.include_router(municipalities.router, prefix=settings.api_v1_prefix)
+app.include_router(weather.router, prefix=settings.api_v1_prefix)
