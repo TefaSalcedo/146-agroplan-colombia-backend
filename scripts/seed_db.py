@@ -1,4 +1,4 @@
-import csv
+import json
 import sys
 import os
 
@@ -14,7 +14,7 @@ settings = get_settings()
 
 def create_municipality_table():
     """Create municipalities table if it doesn't exist"""
-    from sqlalchemy import Column, String, Float, Integer, text
+    from sqlalchemy import Column, String, Float, Integer
 
     class Municipality(Base):
         __tablename__ = "municipalities"
@@ -24,49 +24,65 @@ def create_municipality_table():
         department = Column(String, nullable=False, index=True)
         lat = Column(Float, nullable=False)
         lng = Column(Float, nullable=False)
-        altitude = Column(Integer, nullable=False)
-        avg_temperature = Column(Float)
-        precipitation = Column(Float)
+        altitude = Column(Integer, nullable=True)
+        avg_temperature = Column(Float, nullable=True)
+        precipitation = Column(Float, nullable=True)
         dane_code = Column(String, unique=True, index=True)
 
     Base.metadata.create_all(bind=engine)
     return Municipality
 
 
-def seed_municipalities():
-    """Seed municipalities from CSV file"""
+def convert_coordinate(coord_str: str) -> float:
+    """Convert coordinate from comma decimal to point decimal format"""
+    return float(coord_str.replace(",", "."))
+
+
+def seed_municipalities(force=False):
+    """Seed municipalities from JSON file"""
     Municipality = create_municipality_table()
     
     db: Session = SessionLocal()
     
     try:
         # Check if data already exists
-        if db.query(Municipality).count() > 0:
-            print("Municipalities table already has data. Skipping seed.")
+        existing_count = db.query(Municipality).count()
+        if existing_count > 0 and not force:
+            print(f"Municipalities table already has {existing_count} records. Skipping seed.")
             return
-
-        csv_path = os.path.join(settings.ml_data_path, "../data/divipola_municipios.csv")
-        # Fallback to data/ directory if ml_data_path not set
-        if not os.path.exists(csv_path):
-            csv_path = "data/divipola_municipios.csv"
         
-        if not os.path.exists(csv_path):
-            print(f"Warning: CSV file not found at {csv_path}")
+        # If force, delete existing data
+        if force and existing_count > 0:
+            print(f"Deleting {existing_count} existing municipality records...")
+            db.query(Municipality).delete()
+            db.commit()
+
+        # Try data/ directory first
+        json_path = "data/divipola_municipios.json"
+        if not os.path.exists(json_path):
+            json_path = os.path.join(settings.ml_data_path, "../data/divipola_municipios.json")
+        
+        if not os.path.exists(json_path):
+            print(f"Warning: JSON file not found at {json_path}")
             return
 
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+            for row in data:
+                # Generate ID using department code + municipality code
+                municipality_id = f"{row['cod_dpto']}{row['cod_mpio']}"
+                
                 municipality = Municipality(
-                    id=row["id"],
-                    name=row["name"],
-                    department=row["department"],
-                    lat=float(row["lat"]),
-                    lng=float(row["lng"]),
-                    altitude=int(row["altitude"]),
-                    avg_temperature=float(row["avg_temperature"]) if row["avg_temperature"] else None,
-                    precipitation=float(row["precipitation"]) if row["precipitation"] else None,
-                    dane_code=row["dane_code"],
+                    id=municipality_id,
+                    name=row["nom_mpio"],
+                    department=row["dpto"],
+                    lat=convert_coordinate(row["latitud"]),
+                    lng=convert_coordinate(row["longitud"]),
+                    altitude=0,  # Default value - not available in DIVIPOLA data
+                    avg_temperature=0.0,  # Default value - not available in DIVIPOLA data
+                    precipitation=0.0,  # Default value - not available in DIVIPOLA data
+                    dane_code=f"{row['cod_dpto']}{row['cod_mpio']}",
                 )
                 db.add(municipality)
         
@@ -82,4 +98,5 @@ def seed_municipalities():
 
 
 if __name__ == "__main__":
-    seed_municipalities()
+    force = "--force" in sys.argv
+    seed_municipalities(force=force)

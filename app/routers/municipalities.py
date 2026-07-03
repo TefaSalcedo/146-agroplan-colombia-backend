@@ -28,6 +28,20 @@ def get_departments(db: Session = Depends(get_db)):
     return {"departments": departments}
 
 
+@router.get("/nearby", response_model=MunicipalityResponse)
+def get_nearby_municipality(
+    lat: float = Query(..., description="Latitude coordinate"),
+    lng: float = Query(..., description="Longitude coordinate"),
+    db: Session = Depends(get_db)
+):
+    """Get the nearest municipality to given coordinates"""
+    municipality = catalog.get_nearest_municipality(db, lat, lng)
+    if not municipality:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="No municipalities found")
+    return municipality
+
+
 @router.get("/{municipality_id}", response_model=MunicipalityResponse)
 def get_municipality(municipality_id: str, db: Session = Depends(get_db)):
     """Get a municipality by ID"""
