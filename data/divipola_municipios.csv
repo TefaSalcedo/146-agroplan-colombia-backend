@@ -1,0 +1,12 @@
+id,name,department,lat,lng,altitude,avg_temperature,precipitation,dane_code
+rionegro,Rionegro,Antioquia,6.155,-75.374,2125,17,1900,05660
+envigado,Envigado,Antioquia,6.169,-75.586,1600,20,1800,05266
+guatape,Guatapé,Antioquia,6.239,-75.172,1750,18,2200,03069
+la-estrella,La Estrella,Antioquia,6.158,-75.639,1700,19,1750,03952
+la-union,La Unión,Antioquia,5.974,-75.36,2500,14,2100,03963
+marinilla,Marinilla,Antioquia,6.174,-75.338,2120,17,1850,04468
+medellin,Medellín,Antioquia,6.244,-75.581,1495,22,1650,05001
+el-carmen,El Carmen de Viboral,Antioquia,6.083,-75.334,2150,16,2000,02175
+guarne,Guarne,Antioquia,6.279,-75.442,2150,16,1800,03309
+la-ceja,La Ceja,Antioquia,6.028,-75.431,2200,16,1950,03939
+sonson,Sonsón,Antioquia,5.711,-75.31,2475,14,2300,07664
