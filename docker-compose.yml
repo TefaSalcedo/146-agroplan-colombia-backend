@@ -1,0 +1,36 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://agroplan:agroplan@db:5432/agroplan
+      - OPEN_METEO_BASE_URL=https://api.open-meteo.com
+      - OPEN_METEO_ARCHIVE_URL=https://archive-api.open-meteo.com
+      - ML_DATA_PATH=c:/Repositorios/Datos abiertos/agroplan-colombia/3_data_preparation/data/processed
+      - API_V1_PREFIX=/api/v1
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=agroplan
+      - POSTGRES_PASSWORD=agroplan
+      - POSTGRES_DB=agroplan
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agroplan"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
