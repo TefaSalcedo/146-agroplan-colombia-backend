@@ -85,6 +85,201 @@ docker-compose logs -f api
 
 ## Notas
 
-- Los endpoints de predicción usan mock basado en CSVs procesados del repo ML.
-- Cuando el equipo de ML entregue los modelos `.pkl`, solo se actualiza `app/services/model_loader.py`.
+- Los endpoints de predicción usan mock basado en reglas simples (altitud, temperatura).
+- Cuando el equipo de ML entregue los modelos `.pkl`, se actualiza `app/services/model_loader.py` y `app/services/mock_predictor.py`.
 - Open-Meteo no requiere API key (límite 10K requests/día).
+
+## Integración de Modelos ML
+
+Cuando los modelos XGBoost estén entrenados:
+
+### 1. Colocar los modelos
+Colocar los archivos `.pkl` o `.joblib` en la carpeta `models/` del backend:
+```
+models/
+├── zoning_model.pkl      # Modelo de zonificación (XGBoost Classifier)
+└── calendar_model.pkl    # Modelo de calendarios (XGBoost Regressor)
+```
+
+### 2. Actualizar `app/services/model_loader.py`
+Descomentar y ajustar las rutas para cargar los modelos:
+```python
+self.zoning_model = joblib.load("models/zoning_model.pkl")
+self.calendar_model = joblib.load("models/calendar_model.pkl")
+```
+
+### 3. Actualizar `app/services/mock_predictor.py`
+Reemplazar la lógica de mock por inferencia real:
+```python
+def predict_zoning(self, crop_id, municipality_id, features):
+    model = model_loader.get_zoning_model()
+    prediction = model.predict(features)
+    return prediction
+```
+
+### 4. Actualizar health endpoint
+En `app/main.py`, cambiar `models_loaded` a `True` cuando los modelos estén cargados.
+
+## Contrato API Completo
+
+### GET /api/v1/health
+Response:
+```json
+{
+  "status": "ok",
+  "version": "1.0.0",
+  "models_loaded": false
+}
+```
+
+### GET /api/v1/municipalities?department=Antioquia
+Response:
+```json
+{
+  "municipalities": [
+    {
+      "id": "rionegro",
+      "name": "Rionegro",
+      "department": "Antioquia",
+      "lat": 6.155,
+      "lng": -75.374,
+      "altitude": 2125,
+      "avg_temperature": 17,
+      "precipitation": 1900,
+      "dane_code": "05660"
+    }
+  ],
+  "count": 1
+}
+```
+
+### GET /api/v1/weather/{municipality_id}
+Response:
+```json
+{
+  "temperature": 19.0,
+  "condition": "Parcialmente nublado",
+  "humidity": 72,
+  "precipitation": 45,
+  "icon": "partly",
+  "source": "open-meteo",
+  "fetched_at": "2026-07-02T19:30:00Z"
+}
+```
+
+### GET /api/v1/crops
+Response:
+```json
+{
+  "crops": [
+    {
+      "id": "cafe",
+      "name": "Café",
+      "scientific_name": "Coffea arabica",
+      "image": "/crops/cafe.png",
+      "success_rate": 92,
+      "recommendation": "high",
+      "short_reason": "Clima y altitud ideales en tu zona.",
+      "reason": "...",
+      "days_to_harvest": 270,
+      "soil_type": "Franco, fértil y bien drenado",
+      "ideal_temperature": "18 – 24 °C",
+      "humidity": "70 – 80 %",
+      "precipitation": "1.500 – 2.500 mm / año",
+      "altitude": "1.200 – 2.000 msnm",
+      "irrigation": "Moderado, mantener humedad constante",
+      "substrates": ["Materia orgánica", "Compost", "Cascarilla de arroz"],
+      "planting_months": [2, 3, 9, 10],
+      "harvest_months": [4, 5, 10, 11],
+      "stages": [...],
+      "tips": [...]
+    }
+  ],
+  "count": 8
+}
+```
+
+### POST /api/v1/zoning/predict
+Request:
+```json
+{
+  "crop_id": "cafe",
+  "municipality_id": "rionegro"
+}
+```
+Response:
+```json
+{
+  "crop_id": "cafe",
+  "municipality_id": "rionegro",
+  "suitability": "high",
+  "confidence": 0.92,
+  "model_version": "mock-v1",
+  "factors": {
+    "temperature_match": true,
+    "precipitation_match": true,
+    "soil_match": true,
+    "altitude_match": true
+  }
+}
+```
+
+### POST /api/v1/calendars/predict
+Request:
+```json
+{
+  "crop_id": "cafe",
+  "municipality_id": "rionegro",
+  "month": 7,
+  "year": 2026
+}
+```
+Response:
+```json
+{
+  "crop_id": "cafe",
+  "municipality_id": "rionegro",
+  "month": 7,
+  "year": 2026,
+  "days": [
+    {"day": 1, "rating": "ideal"},
+    {"day": 2, "rating": "acceptable"},
+    ...
+  ],
+  "ideal_count": 12,
+  "model_version": "mock-v1"
+}
+```
+
+### POST /api/v1/recommendations
+Request:
+```json
+{
+  "municipality_id": "rionegro"
+}
+```
+Response:
+```json
+{
+  "top_crop": {
+    "id": "cafe",
+    "name": "Café",
+    ...
+    "suitability": "high"
+  },
+  "other_crops": [
+    {
+      "id": "maiz",
+      "name": "Maíz",
+      "image": "/crops/maiz.png",
+      "recommendation": "high",
+      "success_rate": 85
+    }
+  ],
+  "next_planting_season": {
+    "month": 9,
+    "month_name": "Septiembre",
+    "crops": ["cafe", "maiz"]
+  }
+}
+```
