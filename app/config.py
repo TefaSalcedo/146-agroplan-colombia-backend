@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
 
+    # Climate Sync Job
+    enable_climate_sync: bool = False
+    climate_sync_hour: int = 3
+    climate_sync_minute: int = 0
+    climate_sync_batch_size: int = 100
+    climate_sync_delay_seconds: float = 2.0
+    climate_sync_days_ahead: int = 90
+    climate_sync_cleanup_days: int = 180
+
     class Config:
         env_file = ".env"
         case_sensitive = False

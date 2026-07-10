@@ -47,3 +47,7 @@ class CropResponseLite(BaseModel):
 class CropListResponse(BaseModel):
     crops: List[CropResponse]
     count: int
+
+
+class TopCropResponse(CropResponse):
+    suitability: str

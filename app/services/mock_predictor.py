@@ -1,17 +1,52 @@
+from datetime import datetime, timedelta
 from typing import Dict
+
 import random
-from app.schemas.zoning import ZoningFactors
-from app.schemas.calendar import CalendarDay
+from sqlalchemy.orm import Session
+
+from app.models import MunicipalityClimateForecast
+from app.services.municipality_catalog import MunicipalityCatalog
+
+municipality_catalog = MunicipalityCatalog()
+
+
+def get_municipality_climate_summary(db: Session, municipality_id: str) -> Dict:
+    """Compute average climate values from stored forecasts for a municipality."""
+    today = datetime.utcnow().date()
+    future_cutoff = today + timedelta(days=90)
+
+    records = (
+        db.query(MunicipalityClimateForecast)
+        .filter(MunicipalityClimateForecast.municipality_id == municipality_id)
+        .filter(MunicipalityClimateForecast.forecast_date >= today)
+        .filter(MunicipalityClimateForecast.forecast_date <= future_cutoff)
+        .all()
+    )
+
+    if not records:
+        return {"avg_temp": 0.0, "avg_precipitation": 0.0, "has_data": False}
+
+    avg_temp = sum(r.temp_mean for r in records if r.temp_mean is not None) / max(
+        1, sum(1 for r in records if r.temp_mean is not None)
+    )
+    avg_precipitation = sum(r.precipitation for r in records if r.precipitation is not None) / max(
+        1, sum(1 for r in records if r.precipitation is not None)
+    )
+
+    return {
+        "avg_temp": round(avg_temp, 2),
+        "avg_precipitation": round(avg_precipitation, 2),
+        "has_data": True,
+    }
 
 
 class MockPredictor:
     """Mock predictor for zoning and calendar predictions.
-    
+
     This provides mock predictions based on simple rules while the real ML models
     are being trained. When models are available, this will be replaced by model_loader.py.
     """
-    
-    # Mock suitability data based on crop-altitude-temperature compatibility
+
     _SUITABILITY_RULES = {
         "cafe": {
             "min_alt": 1200,
@@ -62,19 +97,16 @@ class MockPredictor:
             "max_temp": 28,
         },
     }
-    
+
     def predict_zoning(
-        self, 
-        crop_id: str, 
+        self,
+        db: Session,
+        crop_id: str,
         municipality_id: str,
-        municipality_altitude: int,
-        municipality_avg_temp: float
     ) -> Dict:
-        """Predict zoning suitability for a crop in a municipality (mock)"""
-        
+        """Predict zoning suitability for a crop in a municipality (mock)."""
         rules = self._SUITABILITY_RULES.get(crop_id)
         if not rules:
-            # Unknown crop - return low suitability
             return {
                 "crop_id": crop_id,
                 "municipality_id": municipality_id,
@@ -86,30 +118,34 @@ class MockPredictor:
                     "precipitation_match": False,
                     "soil_match": False,
                     "altitude_match": False,
-                }
+                },
             }
-        
-        # Check altitude match
-        alt_match = rules["min_alt"] <= municipality_altitude <= rules["max_alt"]
-        
-        # Check temperature match
-        temp_match = rules["min_temp"] <= municipality_avg_temp <= rules["max_temp"]
-        
-        # Mock precipitation and soil as always matching for now
-        precip_match = True
+
+        climate = get_municipality_climate_summary(db, municipality_id)
+        avg_temp = climate["avg_temp"]
+
+        temp_match = rules["min_temp"] <= avg_temp <= rules["max_temp"]
+
+        min_precipitation = 1.0
+        precip_match = climate["has_data"] and climate["avg_precipitation"] >= min_precipitation
+
+        municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
+        municipality_altitude = municipality.altitude if municipality and municipality.altitude is not None else 0
+        altitude_match = rules["min_alt"] <= municipality_altitude <= rules["max_alt"]
+
         soil_match = True
-        
-        # Calculate suitability based on matches
-        if alt_match and temp_match:
+
+        matches = sum([temp_match, precip_match, altitude_match])
+        if matches >= 3:
             suitability = "high"
             confidence = random.uniform(0.85, 0.95)
-        elif alt_match or temp_match:
+        elif matches >= 2:
             suitability = "medium"
             confidence = random.uniform(0.70, 0.85)
         else:
             suitability = "low"
             confidence = random.uniform(0.50, 0.70)
-        
+
         return {
             "crop_id": crop_id,
             "municipality_id": municipality_id,
@@ -120,30 +156,27 @@ class MockPredictor:
                 "temperature_match": temp_match,
                 "precipitation_match": precip_match,
                 "soil_match": soil_match,
-                "altitude_match": alt_match,
-            }
+                "altitude_match": altitude_match,
+            },
         }
-    
+
     def predict_calendar(
         self,
         crop_id: str,
         municipality_id: str,
         month: int,
         year: int,
-        planting_months: list[int]
+        planting_months: list[int],
     ) -> Dict:
-        """Predict calendar planting ratings for a month (mock)"""
-        
+        """Predict calendar planting ratings for a month (mock)."""
         days = []
         seed = hash(f"{crop_id}-{municipality_id}-{month}-{year}")
         random.seed(seed)
-        
-        # If month is in planting months, more ideal days
+
         is_planting_month = month in planting_months
-        
+
         for day in range(1, 31):
             if is_planting_month:
-                # More ideal days during planting season
                 rand_val = random.random()
                 if rand_val > 0.3:
                     rating = "ideal"
@@ -152,7 +185,6 @@ class MockPredictor:
                 else:
                     rating = "notRecommended"
             else:
-                # Fewer ideal days outside planting season
                 rand_val = random.random()
                 if rand_val > 0.7:
                     rating = "acceptable"
@@ -160,11 +192,11 @@ class MockPredictor:
                     rating = "notRecommended"
                 else:
                     rating = "notRecommended"
-            
+
             days.append({"day": day, "rating": rating})
-        
+
         ideal_count = sum(1 for d in days if d["rating"] == "ideal")
-        
+
         return {
             "crop_id": crop_id,
             "municipality_id": municipality_id,
@@ -172,5 +204,5 @@ class MockPredictor:
             "year": year,
             "days": days,
             "ideal_count": ideal_count,
-            "model_version": "mock-v1"
+            "model_version": "mock-v1",
         }

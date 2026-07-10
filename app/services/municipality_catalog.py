@@ -1,24 +1,14 @@
 import math
 from sqlalchemy.orm import Session
-from sqlalchemy import Column, String, Float, Integer
-from app.database import Base
-
-
-class Municipality(Base):
-    __tablename__ = "municipalities"
-
-    id = Column(String, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    department = Column(String, nullable=False, index=True)
-    lat = Column(Float, nullable=False)
-    lng = Column(Float, nullable=False)
-    altitude = Column(Integer, nullable=True)
-    avg_temperature = Column(Float, nullable=True)
-    precipitation = Column(Float, nullable=True)
-    dane_code = Column(String, unique=True, index=True)
+from app.models import Municipality
 
 
 class MunicipalityCatalog:
+    COLOMBIA_LAT_MIN = -4.5
+    COLOMBIA_LAT_MAX = 13.6
+    COLOMBIA_LNG_MIN = -79.1
+    COLOMBIA_LNG_MAX = -66.8
+
     def get_municipalities(self, db: Session, department: str | None = None):
         """Get all municipalities, optionally filtered by department"""
         query = db.query(Municipality)
@@ -38,12 +28,15 @@ class MunicipalityCatalog:
         departments = db.query(Municipality.department).distinct().order_by(Municipality.department).all()
         return [d[0] for d in departments]
     
-    def get_nearest_municipality(self, db: Session, lat: float, lng: float):
-        """Find the nearest municipality to given coordinates using Haversine formula"""
+    def get_nearest_municipality(self, db: Session, lat: float, lng: float, max_distance_km: float = 20):
+        """Find the nearest covered municipality to given coordinates using Haversine formula"""
+        if not self.is_within_colombia(lat, lng):
+            return None, None
+
         municipalities = db.query(Municipality).all()
         
         if not municipalities:
-            return None
+            return None, None
         
         nearest = None
         min_distance = float('inf')
@@ -54,7 +47,17 @@ class MunicipalityCatalog:
                 min_distance = distance
                 nearest = municipality
         
-        return nearest
+        if nearest is None or min_distance > max_distance_km:
+            return None, min_distance if nearest else None
+
+        return nearest, min_distance
+    
+    @classmethod
+    def is_within_colombia(cls, lat: float, lng: float) -> bool:
+        return (
+            cls.COLOMBIA_LAT_MIN <= lat <= cls.COLOMBIA_LAT_MAX
+            and cls.COLOMBIA_LNG_MIN <= lng <= cls.COLOMBIA_LNG_MAX
+        )
     
     @staticmethod
     def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:

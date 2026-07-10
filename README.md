@@ -14,18 +14,18 @@ Backend FastAPI con Docker y PostgreSQL 16 que sirve datos a las pantallas del f
 
 ```
 backend-agroplan-colombia/
-├── app/
-│   ├── main.py              # FastAPI app
-│   ├── config.py            # Settings
-│   ├── database.py          # SQLAlchemy
-│   ├── dependencies.py      # Dependencies
-│   ├── routers/             # API endpoints
-│   ├── services/            # Business logic
-│   └── schemas/             # Pydantic models
-├── data/                    # Static data
-├── scripts/                 # Utility scripts
-├── tests/                   # Tests (empty for now)
-└── docker-compose.yml
+ app/
+    main.py              # FastAPI app
+    config.py            # Settings
+    database.py          # SQLAlchemy
+    dependencies.py      # Dependencies
+    routers/             # API endpoints
+    services/            # Business logic
+    schemas/             # Pydantic models
+ data/                    # Static data
+ scripts/                 # Utility scripts
+ tests/                   # Tests (empty for now)
+ docker-compose.yml
 ```
 
 ## Endpoints
@@ -66,7 +66,7 @@ docker-compose up -d
 
 ### 4. Poblar la base de datos
 ```bash
-docker-compose exec api python scripts/seed_db.py
+docker-compose exec api python scripts/seed_db.py --complete --strict
 ```
 
 ### 5. Verificar health
@@ -85,9 +85,50 @@ docker-compose logs -f api
 
 ## Notas
 
-- Los endpoints de predicción usan mock basado en reglas simples (altitud, temperatura).
+- Los endpoints de predicción usan mock basado en reglas simples (altitud, temperatura, precipitación) y ahora leen datos reales de forecast de Open-Meteo.
 - Cuando el equipo de ML entregue los modelos `.pkl`, se actualiza `app/services/model_loader.py` y `app/services/mock_predictor.py`.
 - Open-Meteo no requiere API key (límite 10K requests/día).
+
+## Sincronización de Clima (Open-Meteo)
+
+El backend incluye un job programado que consulta Open-Meteo por coordenadas para cada municipio y guarda los pronósticos en PostgreSQL.
+
+### Variables almacenadas
+- Temperatura mínima, máxima y promedio
+- Precipitación
+- Humedad relativa
+- Índice UV máximo
+- Velocidad del viento
+
+### Ejecución
+
+1. **Población inicial** (3 meses):
+```bash
+docker-compose exec api python scripts/seed_db.py --force --strict --sync-climate
+```
+
+2. **Job programado** (dentro del contenedor Docker):
+- Actualización diaria: refresca los próximos 7 días y limpia datos antiguos.
+- Extensión semanal: agrega 7 días adicionales al horizonte.
+- Configurable por variables de entorno en `.env`:
+  - `ENABLE_CLIMATE_SYNC=true`
+  - `CLIMATE_SYNC_HOUR=3`
+  - `CLIMATE_SYNC_MINUTE=0`
+  - `CLIMATE_SYNC_BATCH_SIZE=100`
+  - `CLIMATE_SYNC_DELAY_SECONDS=2.0`
+  - `CLIMATE_SYNC_DAYS_AHEAD=90`
+  - `CLIMATE_SYNC_CLEANUP_DAYS=180`
+
+### Monitoreo
+```bash
+curl http://localhost:8000/api/v1/admin/climate-sync/status
+```
+
+### Estrategia de respeto al límite gratuito
+- Una sola llamada a Open-Meteo cubre hasta 90 días de forecast por municipio.
+- Los municipios se procesan en lotes de 100 con delays de 2 segundos.
+- La carga inicial completa (~1.100 municipios) consume aproximadamente 1.100 requests.
+- El mantenimiento diario consume ~1.100 requests adicionales, dentro del límite de 10.000/día.
 
 ## Integración de Modelos ML
 
@@ -97,8 +138,8 @@ Cuando los modelos XGBoost estén entrenados:
 Colocar los archivos `.pkl` o `.joblib` en la carpeta `models/` del backend:
 ```
 models/
-├── zoning_model.pkl      # Modelo de zonificación (XGBoost Classifier)
-└── calendar_model.pkl    # Modelo de calendarios (XGBoost Regressor)
+ zoning_model.pkl      # Modelo de zonificación (XGBoost Classifier)
+ calendar_model.pkl    # Modelo de calendarios (XGBoost Regressor)
 ```
 
 ### 2. Actualizar `app/services/model_loader.py`
@@ -183,10 +224,10 @@ Response:
       "reason": "...",
       "days_to_harvest": 270,
       "soil_type": "Franco, fértil y bien drenado",
-      "ideal_temperature": "18 – 24 °C",
-      "humidity": "70 – 80 %",
-      "precipitation": "1.500 – 2.500 mm / año",
-      "altitude": "1.200 – 2.000 msnm",
+      "ideal_temperature": "18  24 °C",
+      "humidity": "70  80 %",
+      "precipitation": "1.500  2.500 mm / año",
+      "altitude": "1.200  2.000 msnm",
       "irrigation": "Moderado, mantener humedad constante",
       "substrates": ["Materia orgánica", "Compost", "Cascarilla de arroz"],
       "planting_months": [2, 3, 9, 10],
@@ -283,3 +324,4 @@ Response:
   }
 }
 ```
+

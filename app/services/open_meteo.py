@@ -1,5 +1,5 @@
 import httpx
-from datetime import datetime
+from datetime import datetime, date
 from app.config import get_settings
 
 settings = get_settings()
@@ -80,7 +80,7 @@ class OpenMeteoService:
             "timezone": "America/Bogota"
         }
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
@@ -100,10 +100,10 @@ class OpenMeteoService:
         }
     
     async def get_historical_weather(
-        self, 
-        lat: float, 
-        lng: float, 
-        start_date: str, 
+        self,
+        lat: float,
+        lng: float,
+        start_date: str,
         end_date: str
     ) -> dict:
         """Get historical weather from Open-Meteo Archive API"""
@@ -113,13 +113,67 @@ class OpenMeteoService:
             "longitude": lng,
             "start_date": start_date,
             "end_date": end_date,
-            "daily": "temperature_2m_mean,precipitation_sum,relative_humidity_2m_mean,shortwave_radiation_sum",
+            "daily": "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,uv_index_max,wind_speed_10m_max",
             "timezone": "America/Bogota"
         }
-        
-        async with httpx.AsyncClient() as client:
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-        
+
         return data
+
+    async def get_daily_forecast(
+        self,
+        lat: float,
+        lng: float,
+        days: int = 90
+    ) -> list[dict]:
+        """Get daily forecast from Open-Meteo Forecast API.
+
+        Returns a list of daily records with temperature, precipitation, humidity,
+        UV index and wind speed. One Open-Meteo call covers all requested days.
+        """
+        url = f"{self.base_url}/v1/forecast"
+        daily_vars = (
+            "temperature_2m_min,temperature_2m_max,temperature_2m_mean,"
+            "precipitation_sum,relative_humidity_2m_mean,uv_index_max,wind_speed_10m_max"
+        )
+        params = {
+            "latitude": lat,
+            "longitude": lng,
+            "daily": daily_vars,
+            "forecast_days": days,
+            "timezone": "America/Bogota"
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        daily = data.get("daily", {})
+        dates = daily.get("time", [])
+        if not dates:
+            return []
+
+        records = []
+        for idx, date_str in enumerate(dates):
+            try:
+                forecast_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+
+            records.append({
+                "forecast_date": forecast_date,
+                "temp_min": daily.get("temperature_2m_min", [])[idx] if idx < len(daily.get("temperature_2m_min", [])) else None,
+                "temp_max": daily.get("temperature_2m_max", [])[idx] if idx < len(daily.get("temperature_2m_max", [])) else None,
+                "temp_mean": daily.get("temperature_2m_mean", [])[idx] if idx < len(daily.get("temperature_2m_mean", [])) else None,
+                "precipitation": daily.get("precipitation_sum", [])[idx] if idx < len(daily.get("precipitation_sum", [])) else None,
+                "humidity": daily.get("relative_humidity_2m_mean", [])[idx] if idx < len(daily.get("relative_humidity_2m_mean", [])) else None,
+                "uv_index": daily.get("uv_index_max", [])[idx] if idx < len(daily.get("uv_index_max", [])) else None,
+                "wind_speed": daily.get("wind_speed_10m_max", [])[idx] if idx < len(daily.get("wind_speed_10m_max", [])) else None,
+            })
+
+        return records

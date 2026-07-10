@@ -1,19 +1,20 @@
-from pydantic import BaseModel
 from typing import List
-from app.schemas.crop import CropResponse, CropResponseLite
+from pydantic import BaseModel, Field
+
+from app.schemas.crop import CropResponseLite, TopCropResponse
 
 
 class RecommendationRequest(BaseModel):
-    municipality_id: str
+    municipality_id: str = Field(description="Municipality identifier")
 
 
 class NextPlantingSeason(BaseModel):
-    month: int
+    month: int = Field(ge=1, le=12)
     month_name: str
     crops: List[str]
 
 
 class RecommendationResponse(BaseModel):
-    top_crop: CropResponse
+    top_crop: TopCropResponse
     other_crops: List[CropResponseLite]
     next_planting_season: NextPlantingSeason
