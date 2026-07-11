@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, List
 
 
 class ZoningRequest(BaseModel):
@@ -21,3 +21,14 @@ class ZoningResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     model_version: str
     factors: ZoningFactors
+
+
+class ZoningBatchRequest(BaseModel):
+    crop_id: str = Field(description="Crop identifier to evaluate across municipalities")
+
+
+class ZoningBatchResponse(BaseModel):
+    crop_id: str
+    predictions: List[ZoningResponse]
+    count: int
+    model_version: str = "mock-v1"

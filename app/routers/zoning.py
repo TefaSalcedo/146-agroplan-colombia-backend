@@ -4,7 +4,12 @@ from app.database import get_db
 from app.services.crop_catalog import CropCatalog
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.mock_predictor import MockPredictor
-from app.schemas.zoning import ZoningRequest, ZoningResponse
+from app.schemas.zoning import (
+    ZoningRequest,
+    ZoningResponse,
+    ZoningBatchRequest,
+    ZoningBatchResponse,
+)
 from app.schemas.system import ErrorResponse
 
 router = APIRouter(prefix="/zoning", tags=["zoning"])
@@ -57,3 +62,45 @@ def predict_zoning(
     )
 
     return ZoningResponse(**prediction)
+
+
+@router.post(
+    "/predict/batch",
+    response_model=ZoningBatchResponse,
+    summary="Predict zoning suitability for all municipalities",
+    description=(
+        "Returns crop suitability predictions for every municipality covered by AgroPlan.\n\n"
+        "Use cases:\n"
+        "- Render a nationwide crop suitability map.\n"
+        "- Compare viability across regions without issuing hundreds of single requests."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "Crop ID not found.",
+        }
+    },
+)
+def predict_zoning_batch(
+    request: ZoningBatchRequest,
+    db: Session = Depends(get_db),
+):
+    crop = crop_catalog.get_crop_by_id(request.crop_id)
+    if not crop:
+        raise HTTPException(status_code=404, detail="Crop not found")
+
+    municipalities = municipality_catalog.get_municipalities(db)
+    raw_predictions = predictor.predict_zoning_batch(
+        db=db,
+        crop_id=request.crop_id,
+        municipalities=municipalities,
+    )
+
+    predictions = [ZoningResponse(**prediction) for prediction in raw_predictions]
+
+    return ZoningBatchResponse(
+        crop_id=request.crop_id,
+        predictions=predictions,
+        count=len(predictions),
+        model_version="mock-v1",
+    )
