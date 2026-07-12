@@ -12,7 +12,6 @@ from app.routers import (
     crops,
     zoning,
     calendars,
-    recommendations,
     admin,
     alerts,
     forecast,
@@ -41,7 +40,6 @@ OPENAPI_TAGS = [
     {"name": "crops", "description": "Crop catalog endpoints (7 ML-supported crops)."},
     {"name": "zoning", "description": "Crop suitability prediction by municipality with ML models and fallbacks."},
     {"name": "calendars", "description": "Planting calendar predictions (batch multi-crop, 12-month horizon)."},
-    {"name": "recommendations", "description": "Top crop recommendation ranking for a municipality."},
     {"name": "admin", "description": "Operational status, model health, cache management and audit (API key protected)."},
 ]
 
@@ -78,12 +76,11 @@ app = FastAPI(
     title="AgroPlan Colombia Backend",
     description=(
         "AgroPlan Colombia API for municipality intelligence, weather context, "
-        "crop recommendations and ML-powered agronomic predictions.\n\n"
+        "crop zoning and ML-powered agronomic predictions.\n\n"
         "Use this API to:\n"
         "- Browse municipalities and departments.\n"
         "- Retrieve weather, forecast and climate alerts.\n"
-        "- Evaluate zoning suitability and planting calendars.\n"
-        "- Rank crop recommendations for decision support.\n\n"
+        "- Evaluate zoning suitability and planting calendars.\n\n"
         "Supported crops: aguacate, algodon, cana panelera, cebolla, fresa, pina, soya."
     ),
     version="2.0.0",
@@ -205,7 +202,6 @@ app.include_router(weather.router, prefix=settings.api_v1_prefix)
 app.include_router(crops.router, prefix=settings.api_v1_prefix)
 app.include_router(zoning.router, prefix=settings.api_v1_prefix)
 app.include_router(calendars.router, prefix=settings.api_v1_prefix)
-app.include_router(recommendations.router, prefix=settings.api_v1_prefix)
 app.include_router(alerts.router, prefix=settings.api_v1_prefix)
 app.include_router(forecast.router, prefix=settings.api_v1_prefix)
 app.include_router(admin.router, prefix=settings.api_v1_prefix)

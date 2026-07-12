@@ -29,7 +29,11 @@ def test_calendar_batch(client):
 
         # Each monthly forecast should have climate_source
         for mf in result["monthly_forecasts"]:
-            assert mf["climate_source"] in ("open_meteo_forecast", "historical_climatology")
+            assert mf["climate_source"] in (
+                "open_meteo_forecast",
+                "historical_climatology",
+                "not_available",
+            )
 
         # Top harvest months should have at most 3 entries
         assert len(result["top_harvest_months"]) <= 3

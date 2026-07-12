@@ -15,39 +15,11 @@ class ClimateBasedRecommendation(BaseModel):
     source: str = Field(default="climate_analog_knn", description="Source model: climate_analog_knn")
 
 
-class ZoningRequest(BaseModel):
-    crop_id: str = Field(description="Crop identifier")
-    municipality_id: str = Field(description="Municipality DANE code (5 digits)")
-
-
-class ZoningBatchRequest(BaseModel):
-    municipality_id: str = Field(description="Municipality DANE code (5 digits)")
-    crop_ids: Optional[List[str]] = Field(
-        default=None,
-        description="Optional list of crop IDs. If omitted, all ML-supported crops are evaluated.",
-    )
-
-
 class ZoningFactors(BaseModel):
     temperature_match: bool = Field(description="Temperature range compatibility")
     precipitation_match: bool = Field(description="Precipitation compatibility")
     soil_match: bool = Field(description="Soil compatibility")
     altitude_match: bool = Field(description="Altitude compatibility")
-
-
-class ZoningResponse(BaseModel):
-    crop_id: str
-    municipality_id: str
-    suitability: Literal["high", "medium", "low", "none"]
-    confidence: float = Field(ge=0.0, le=1.0)
-    model_version: str
-    factors: ZoningFactors
-    method: Optional[str] = Field(default=None, description="Prediction method: primary_model, fallback, unavailable")
-    probabilities: Optional[Dict[str, float]] = Field(
-        default=None, description="Per-class probabilities when available"
-    )
-    warnings: Optional[List[str]] = Field(default=None, description="Data quality warnings")
-    cache_hit: Optional[bool] = Field(default=None, description="Whether this result came from cache")
 
 
 class ZoningBatchCropResult(BaseModel):
@@ -103,16 +75,4 @@ class ZoningMapResponse(BaseModel):
     cache_hit: Optional[bool] = None
 
 
-class ZoningMockBatchRequest(BaseModel):
-    """Legacy mock batch request for a crop across all municipalities."""
 
-    crop_id: str = Field(description="Crop identifier to evaluate across municipalities")
-
-
-class ZoningMockBatchResponse(BaseModel):
-    """Legacy mock batch response for a crop across all municipalities."""
-
-    crop_id: str
-    predictions: List[ZoningResponse]
-    count: int
-    model_version: str = "mock-v1"

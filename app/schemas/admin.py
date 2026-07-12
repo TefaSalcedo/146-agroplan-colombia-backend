@@ -77,7 +77,7 @@ class PredictionRunResponse(BaseModel):
     """Single prediction audit entry."""
 
     id: int = Field(description="Prediction run identifier")
-    request_id: str = Field(description="Caller-facing request id")
+    request_id: Optional[str] = Field(default=None, description="Caller-facing request id")
     prediction_type: str = Field(description="Prediction type (zoning, yield, calendar)")
     cache_hit: bool = Field(description="Whether the result was served from cache")
     method: str = Field(description="Method used: primary_model, fallback, mock")

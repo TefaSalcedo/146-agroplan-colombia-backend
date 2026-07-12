@@ -243,9 +243,7 @@ docker compose restart api
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `POST` | `/api/v1/zoning/predict` | Zonificación para un cultivo y municipio |
-| `GET` | `/api/v1/zoning/recommendations/{municipality_id}` | Ranking de cultivos para un municipio (solo municipio) |
-| `POST` | `/api/v1/zoning/recommendations` | Ranking de todos los cultivos para un municipio |
+| `GET` | `/api/v1/zoning/recommendations/{municipality_id}` | Ranking de cultivos para un municipio (LightGBM + recomendaciones por clima/suelo) |
 | `GET` | `/api/v1/zoning/map/{crop_id}` | Mapa de zonificación para todos los municipios |
 
 ### Calendars
@@ -255,11 +253,6 @@ docker compose restart api
 | `POST` | `/api/v1/calendars/predict` | Calendario legado un mes |
 | `POST` | `/api/v1/calendars/predict-batch` | Calendario multi-cultivo 12 meses |
 
-### Recommendations
-
-| Método | Endpoint | Descripción |
-|---|---|---|
-| `POST` | `/api/v1/recommendations` | Top cultivos recomendados para un municipio (modelo LightGBM) |
 
 ### Admin (requieren `X-Admin-API-Key`)
 
@@ -356,38 +349,39 @@ curl http://localhost:8000/api/v1/crops
 
 Retorna los 7 cultivos soportados: `aguacate`, `algodon`, `cana_panelera`, `cebolla`, `fresa`, `pina`, `soya`.
 
-### Zonificación para un cultivo
+### Zonificación y recomendación por municipio
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/zoning/predict \
-  -H "Content-Type: application/json" \
-  -d '{"crop_id":"aguacate","municipality_id":"05001"}'
+curl http://localhost:8000/api/v1/zoning/recommendations/05001
 ```
 
 ```json
 {
-  "crop_id": "aguacate",
   "municipality_id": "05001",
-  "suitability": "low",
-  "confidence": 0.6,
-  "model_version": "mock-v1",
-  "factors": {
-    "temperature_match": false,
-    "precipitation_match": false,
-    "soil_match": true,
-    "altitude_match": false
-  },
-  "method": "mock",
-  "cache_hit": false
+  "municipality_name": "MEDELLÍN",
+  "results": [
+    {
+      "crop_id": "aguacate",
+      "crop_name": "Aguacate",
+      "suitability": "medium",
+      "confidence": 0.4414,
+      "model_version": "zoning-lightgbm-v1",
+      "method": "primary_model",
+      ...
+    }
+  ],
+  "climate_based_recommendations": [
+    { "crop_id": "aguacate", "crop_name": "Aguacate", "score": 0.3333, "source": "climate_analog_knn" },
+    { "crop_id": "cebolla", "crop_name": "Cebolla", "score": 0.2222, "source": "climate_analog_knn" }
+  ],
+  "model_version": "zoning-lightgbm-v1"
 }
 ```
 
-### Zonificación batch para todos los cultivos
+### Mapa de zonificación para un cultivo
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/zoning/recommendations \
-  -H "Content-Type: application/json" \
-  -d '{"municipality_id":"05001"}'
+curl http://localhost:8000/api/v1/zoning/map/aguacate
 ```
 
 ### Calendario batch
