@@ -1,12 +1,13 @@
 # AgroPlan Colombia Backend
 
-Backend FastAPI con Docker y PostgreSQL 16 que sirve datos a las pantallas del frontend AgroPlan Colombia y expone endpoints de predicción con estructura lista para conectar los modelos XGBoost.
+Backend FastAPI con Docker y PostgreSQL 18 que sirve datos a las pantallas del frontend AgroPlan Colombia y expone endpoints de predicción con estructura lista para conectar modelos LightGBM, CatBoost y XGBoost.
 
 ## Stack Tecnológico
 
-- **Python 3.12-slim**
+- **Python 3.14-slim**
 - **FastAPI >= 0.115.0**
-- **PostgreSQL 16**
+- **PostgreSQL 18**
+- **SQLAlchemy 2.0 + Alembic**
 - **Open-Meteo API** (clima, sin API key)
 - **Docker Compose**
 
@@ -14,86 +15,561 @@ Backend FastAPI con Docker y PostgreSQL 16 que sirve datos a las pantallas del f
 
 ```
 backend-agroplan-colombia/
- app/
-    main.py              # FastAPI app
-    config.py            # Settings
-    database.py          # SQLAlchemy
-    dependencies.py      # Dependencies
-    routers/             # API endpoints
-    services/            # Business logic
-    schemas/             # Pydantic models
- data/                    # Static data
- scripts/                 # Utility scripts
- tests/                   # Tests (empty for now)
- docker-compose.yml
+├── app/
+│   ├── main.py              # FastAPI app
+│   ├── config.py            # Settings
+│   ├── database.py          # SQLAlchemy engines
+│   ├── dependencies.py      # FastAPI dependencies
+│   ├── models.py            # SQLAlchemy ORM models
+│   ├── routers/             # API endpoints
+│   ├── services/            # Business logic
+│   └── schemas/             # Pydantic models
+├── alembic/                 # Database migrations
+├── data/                    # Static data (DIVIPOLA)
+├── scripts/                 # Utility scripts
+├── tests/                   # Pytest test suite
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
 ```
 
-## Endpoints
+## Setup desde Cero con Docker
 
-### Health
-- `GET /api/v1/health` - Health check
+### 1. Prerrequisitos
 
-### Municipalities
-- `GET /api/v1/municipalities` - Lista de municipios
-- `GET /api/v1/municipalities?department={dept}` - Filtrar por departamento
+- Docker 24+
+- Docker Compose v2+
+- `curl` o navegador para probar endpoints
 
-### Weather
-- `GET /api/v1/weather/{municipality_id}` - Clima actual desde Open-Meteo
+### 2. Clonar y entrar al proyecto
 
-### Crops
-- `GET /api/v1/crops` - Catálogo de cultivos
-- `GET /api/v1/crops/{id}` - Ficha de un cultivo
+```bash
+git clone <repo-url>
+cd 146-AgroPlan-Colombia-Backend
+```
 
-### Predictions (Mock)
-- `POST /api/v1/zoning/predict` - Zonificación agroclimática
-- `POST /api/v1/calendars/predict` - Calendario de siembra
-- `POST /api/v1/recommendations` - Recomendaciones de cultivos
+### 3. Copiar variables de entorno
 
-## Setup
-
-### 1. Copiar variables de entorno
 ```bash
 cp .env.example .env
 ```
 
-### 2. Configurar ML_DATA_PATH
-En `.env`, ajustar `ML_DATA_PATH` apuntando a la carpeta `3_data_preparation/data/processed` del repo `agroplan-colombia`.
+Edita `.env` con los valores que necesites. Como mínimo:
 
-### 3. Iniciar con Docker
 ```bash
-docker-compose up -d
+# Base de datos local (Docker)
+DATABASE_URL=postgresql://agroplan:agroplan@db:5432/agroplan
+MIGRATION_DATABASE_URL=postgresql://agroplan:agroplan@db:5432/agroplan
+
+# API
+ADMIN_API_KEY=tu-admin-key-segura
+API_V1_PREFIX=/api/v1
+
+# Desactivar sync automático en primera carga
+ENABLE_CLIMATE_SYNC=false
 ```
 
-### 4. Poblar la base de datos
+### 4. Construir imágenes y levantar servicios
+
 ```bash
-docker-compose exec api python scripts/seed_db.py --complete --strict
+docker compose up -d --build
 ```
 
-### 5. Verificar health
+Esto levanta:
+- `db`: PostgreSQL 18 en `localhost:5432`
+- `api`: FastAPI en `http://localhost:8000`
+
+### 5. Ejecutar migraciones de Alembic
+
+```bash
+docker compose exec api alembic upgrade head
+```
+
+### 6. Poblar datos iniciales
+
+```bash
+docker compose exec api python scripts/seed_db.py --force --strict
+```
+
+Verifica la cobertura:
+
+```bash
+# Debe reportar 1122 municipios y 33 departamentos
+```
+
+### 7. Verificar health
+
 ```bash
 curl http://localhost:8000/api/v1/health
 ```
 
-## Desarrollo
+### 8. Reiniciar el contenedor para sincronización (opcional)
 
-El servidor se reinicia automáticamente con `--reload` en modo desarrollo.
+Si quieres que el job de clima se ejecute automáticamente, activa `ENABLE_CLIMATE_SYNC=true` en `.env`:
 
-Logs:
 ```bash
-docker-compose logs -f api
+docker compose down
+docker compose up -d
 ```
 
-## Notas
+Para una carga inicial completa de clima:
 
-- Los endpoints de predicción usan mock basado en reglas simples (altitud, temperatura, precipitación) y ahora leen datos reales de forecast de Open-Meteo.
-- Cuando el equipo de ML entregue los modelos `.pkl`, se actualiza `app/services/model_loader.py` y `app/services/mock_predictor.py`.
-- Open-Meteo no requiere API key (límite 10K requests/día).
+```bash
+docker compose exec api python scripts/seed_db.py --force --strict --sync-climate --limit 50
+```
+
+> Nota: una carga completa de ~1.100 municipios consume aproximadamente 1.100 requests y tarda varias horas. Recomendamos `--limit 50` para pruebas.
+
+## Desarrollo
+
+### Levantar solo la base de datos
+
+```bash
+docker compose up -d db
+```
+
+### Migrar base de datos local
+
+```bash
+python -m alembic upgrade head
+```
+
+### Poblar datos
+
+```bash
+python scripts/seed_db.py --force --strict
+```
+
+### Correr tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+### Logs
+
+```bash
+docker compose logs -f api
+docker compose logs -f db
+```
+
+Puedes aumentar el detalle de los logs con la variable `LOG_LEVEL` en `.env`:
+
+```bash
+LOG_LEVEL=DEBUG
+```
+
+- `DEBUG`: muestra paso a paso cada endpoint, consulta a base de datos, llamada a modelos ML, carga de perfiles/parquets, llamadas a LLM y sincronización con Open-Meteo.
+- `INFO` (default): muestra entradas/salidas de endpoints, eventos de modelos y resúmenes de jobs.
+- `WARNING`/`ERROR`: solo errores y advertencias.
+
+Reinicia el contenedor para aplicar el cambio:
+
+```bash
+docker compose restart api
+```
+
+## Variables de Entorno
+
+| Variable | Descripción | Ejemplo |
+|---|---|---|
+| `DATABASE_URL` | URL de conexión pooled para la app | `postgresql://agroplan:agroplan@db:5432/agroplan` |
+| `MIGRATION_DATABASE_URL` | URL directa para Alembic (sin pooling) | `postgresql://agroplan:agroplan@db:5432/agroplan` |
+| `OPEN_METEO_BASE_URL` | Base URL del API de forecast | `https://api.open-meteo.com` |
+| `OPEN_METEO_ARCHIVE_URL` | Base URL del API de archivo | `https://archive-api.open-meteo.com` |
+| `ML_MODELS_PATH` | Ruta local de artefactos ML | `./models` |
+| `HF_TOKEN` | Token de Hugging Face | `hf_...` |
+| `HF_MODEL_REPO_ZONING` | Repo de modelos de zonificación | `agroplan/zoning-models` |
+| `HF_MODEL_REPO_YIELD` | Repo de modelos de rendimiento | `agroplan/yield-models` |
+| `HF_MODEL_REVISION` | Revisión fija de HF | `main` |
+| `LLM_PROVIDER` | Punto de inicio del round-robin (`openrouter` o `groq`) | `openrouter` |
+| `OPENROUTER_API_KEY` | API key de OpenRouter | `sk-...` |
+| `OPENROUTER_MODELS` | Modelos separados por coma (round-robin) | `google/gemini-2.0-flash:free,meta-llama/llama-3.3-70b-instruct:free` |
+| `GROQ_API_KEY` | API key de Groq | `gsk_...` |
+| `GROQ_MODELS` | Modelos separados por coma (round-robin) | `llama-3.3-70b-versatile,llama-3.1-8b-instant,mistral-saba-24b` |
+| `LLM_TIMEOUT_SECONDS` | Timeout por llamada LLM | `30` |
+| `ADMIN_API_KEY` | API key para endpoints admin | `tu-admin-key-segura` |
+| `CACHE_TTL_STRATEGY` | Estrategia de TTL de caché | `end_of_month_bogota` |
+| `ENABLE_MOCK_PREDICTOR` | Activar MockPredictor como fallback final | `false` |
+|| `LOG_LEVEL` | Nivel de logging (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+| `API_V1_PREFIX` | Prefijo de la API | `/api/v1` |
+| `CORS_ORIGINS` | Orígenes permitidos | `http://localhost:3000,http://localhost:3001` |
+| `ENABLE_CLIMATE_SYNC` | Habilitar sync programado | `true` |
+| `CLIMATE_SYNC_HOUR` | Hora del sync diario | `3` |
+| `CLIMATE_SYNC_MINUTE` | Minuto del sync diario | `0` |
+| `CLIMATE_SYNC_BATCH_SIZE` | Tamaño de lote | `100` |
+| `CLIMATE_SYNC_DELAY_SECONDS` | Delay entre requests | `2.0` |
+| `CLIMATE_SYNC_DAYS_AHEAD` | Días de forecast | `16` |
+| `CLIMATE_SYNC_CLEANUP_DAYS` | Días a conservar | `180` |
+
+## Endpoints
+
+### System
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/` | Metadata de la API |
+| `GET` | `/api/v1/health` | Health check básico |
+| `GET` | `/api/v1/readiness` | Readiness detallado por componente |
+
+### Municipalities
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/municipalities` | Lista de municipios |
+| `GET` | `/api/v1/municipalities?department_id=05` | Filtrar por DANE de departamento |
+| `GET` | `/api/v1/municipalities?department=Antioquia` | Filtrar por nombre de departamento |
+| `GET` | `/api/v1/municipalities/departments` | Lista de departamentos con DANE y conteo |
+| `GET` | `/api/v1/municipalities/nearby?lat=6.24&lng=-75.58&max_distance_km=20` | Municipio más cercano a coordenadas |
+| `GET` | `/api/v1/municipalities/{municipality_id}` | Detalle de un municipio (DANE 5 dígitos) |
+
+### Weather & Forecast
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/weather/{municipality_id}` | Clima actual (BD con fallback a Open-Meteo) |
+| `GET` | `/api/v1/forecast/daily/{municipality_id}?days=7` | Pronóstico diario (BD con fallback a Open-Meteo) |
+| `GET` | `/api/v1/alerts/{municipality_id}` | Alertas climáticas corto plazo (BD con fallback a Open-Meteo) |
+
+### Crops
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/crops` | Catálogo completo de cultivos (7 soportados) |
+| `GET` | `/api/v1/crops/lite` | Lista ligera de cultivos |
+| `GET` | `/api/v1/crops/{crop_id}` | Ficha de un cultivo |
+| `GET` | `/api/v1/crops/{crop_id}/recommendations/{municipality_id}` | Recomendación práctica del cultivo para un municipio |
+
+### Zoning
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/zoning/recommendations/{municipality_id}` | Ranking de cultivos para un municipio (LightGBM + recomendaciones por clima/suelo) |
+| `GET` | `/api/v1/zoning/map/{crop_id}` | Mapa de zonificación CatBoost para un cultivo, solo municipios medium/high |
+
+### Calendars
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `POST` | `/api/v1/calendars/predict-batch` | Calendario multi-cultivo 12 meses con explicación por cultivo |
+
+
+### Admin (requieren `X-Admin-API-Key`)
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/admin/climate-sync/status` | Estado del sync de clima |
+| `GET` | `/api/v1/admin/models/status` | Estado de modelos ML cargados |
+| `GET` | `/api/v1/admin/cache/stats` | Estadísticas de caché |
+| `POST` | `/api/v1/admin/cache/invalidate` | Invalidar caché |
+| `GET` | `/api/v1/admin/audit/recent` | Auditoría reciente de predicciones |
+
+## Ejemplos de Uso
+
+### Health
+
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+```json
+{
+  "status": "ok",
+  "version": "2.0.0",
+  "models_loaded": false
+}
+```
+
+### Readiness
+
+```bash
+curl http://localhost:8000/api/v1/readiness
+```
+
+```json
+{
+  "status": "ok",
+  "version": "2.0.0",
+  "components": [
+    { "name": "database", "ready": true, "detail": null },
+    { "name": "zoning_model", "ready": false, "detail": "Model not loaded" },
+    { "name": "yield_models", "ready": false, "detail": "Yield models not loaded" },
+    { "name": "reference_profiles", "ready": false, "detail": "Profiles not loaded" },
+    { "name": "golden_vectors", "ready": false, "detail": "Not validated" }
+  ]
+}
+```
+
+### Listar departamentos
+
+```bash
+curl http://localhost:8000/api/v1/municipalities/departments
+```
+
+```json
+{
+  "departments": ["ANTIOQUIA", "BOYACÁ", ...],
+  "departments_detailed": [
+    {
+      "dane_code": "05",
+      "name": "ANTIOQUIA",
+      "municipality_count": 125
+    }
+  ],
+  "count": 33
+}
+```
+
+### Municipio por DANE
+
+```bash
+curl http://localhost:8000/api/v1/municipalities/05001
+```
+
+```json
+{
+  "id": "05001",
+  "name": "MEDELLÍN",
+  "department": "ANTIOQUIA",
+  "department_id": "05",
+  "lat": 6.246631,
+  "lng": -75.581775,
+  "altitude": 0,
+  "avg_temperature": 0.0,
+  "precipitation": 0.0,
+  "dane_code": "05001"
+}
+```
+
+### Listar cultivos
+
+```bash
+curl http://localhost:8000/api/v1/crops
+```
+
+Retorna los 7 cultivos soportados: `aguacate`, `algodon`, `cana_panelera`, `cebolla`, `fresa`, `pina`, `soya`. Los datos provienen de FAO/EcoCrop; no incluyen tasas de éxito ni recomendaciones mockeadas.
+
+### Recomendación práctica para un cultivo en un municipio
+
+```bash
+curl http://localhost:8000/api/v1/crops/aguacate/recommendations/05001
+```
+
+```json
+{
+  "crop_id": "aguacate",
+  "crop_name": "Aguacate",
+  "municipality_id": "05001",
+  "municipality_name": "MEDELLÍN",
+  "text": "En Medellín el aguacate se adapta bien gracias a la altitud media y temperaturas frescas. Se recomienda plantar en marzo-abril o septiembre-octubre, mantener suelo bien drenado y riego moderado.",
+  "status": "success",
+  "provider": "groq",
+  "model": "llama-3.3-70b-versatile",
+  "tokens_in": 520,
+  "tokens_out": 95,
+  "tokens_total": 615,
+  "latency_ms": 2100
+}
+```
+
+### Zonificación y recomendación por municipio
+
+```bash
+curl http://localhost:8000/api/v1/zoning/recommendations/05001
+```
+
+```json
+{
+  "municipality_id": "05001",
+  "municipality_name": "MEDELLÍN",
+  "results": [
+    {
+      "crop_id": "aguacate",
+      "crop_name": "Aguacate",
+      "suitability": "medium",
+      "confidence": 0.4414,
+      "model_version": "zoning-lightgbm-v1",
+      "method": "primary_model",
+      ...
+    }
+  ],
+  "climate_based_recommendations": [
+    { "crop_id": "cebolla", "crop_name": "Cebolla", "score": 0.2222, "source": "climate_analog_knn" },
+    { "crop_id": "fresa", "crop_name": "Fresa", "score": 0.2222, "source": "climate_analog_knn" }
+  ],
+  "model_version": "zoning-lightgbm-v1"
+}
+```
+
+`results` contiene solo cultivos que LightGBM clasificó como `high` o `medium`. `climate_based_recommendations` muestra cultivos adicionales sugeridos por analogía climática (k-NN), excluyendo los que ya aparecen en `results`.
+
+### Mapa de zonificación para un cultivo
+
+```bash
+curl http://localhost:8000/api/v1/zoning/map/aguacate
+```
+
+```json
+{
+  "crop_id": "aguacate",
+  "crop_name": "Aguacate",
+  "model_version": "zoning-catboost-v1",
+  "method": "catboost_batch",
+  "total_municipalities": 612,
+  "results": [
+    {
+      "municipality_id": "05001",
+      "municipality_name": "MEDELL\u00cdN",
+      "dane_code": "05001",
+      "lat": 6.244338,
+      "lng": -75.581482,
+      "suitability": "high",
+      "confidence": 0.8125,
+      "method": "catboost_batch",
+      "probabilities": {
+        "none": 0.0123,
+        "low": 0.0456,
+        "medium": 0.1296,
+        "high": 0.8125
+      }
+    }
+  ]
+}
+```
+
+El endpoint genera la predicción para todos los municipios en una sola llamada al modelo CatBoost y retorna únicamente los clasificados como `medium` o `high`, incluyendo coordenadas para renderizar en el mapa.
+
+### Calendario batch
+
+```bash
+curl -X POST http://localhost:8000/api/v1/calendars/predict-batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "municipality_id": "05001",
+    "crop_ids": ["aguacate", "pina"],
+    "horizon_months": 12
+  }'
+```
+
+```json
+{
+  "municipality_id": "05001",
+  "municipality_name": "MEDELLÍN",
+  "horizon_months": 12,
+  "results": [
+    {
+      "crop_id": "aguacate",
+      "crop_name": "Aguacate",
+      "yield_prediction": 5.16,
+      "yield_model_version": "yield-ensemble-v1",
+      "yield_confidence": "medium",
+      "top_harvest_months": [...],
+      "monthly_forecasts": [...],
+      "warnings": [],
+      "method": "yield_ensemble",
+      "explanation": {
+        "text": "En Medellín, el aguacate...",
+        "status": "success",
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "tokens_in": 450,
+        "tokens_out": 120,
+        "tokens_total": 570,
+        "latency_ms": 1234,
+        "error": null
+      }
+    }
+  ],
+  "model_version": "yield-ensemble-v1"
+}
+```
+
+### Admin: estado de modelos
+
+```bash
+curl -H "X-Admin-API-Key: tu-admin-key-segura" \
+  http://localhost:8000/api/v1/admin/models/status
+```
+
+### Admin: estadísticas de caché
+
+```bash
+curl -H "X-Admin-API-Key: tu-admin-key-segura" \
+  http://localhost:8000/api/v1/admin/cache/stats
+```
+
+### Admin: invalidar caché
+
+```bash
+curl -X POST http://localhost:8000/api/v1/admin/cache/invalidate \
+  -H "X-Admin-API-Key: tu-admin-key-segura" \
+  -H "Content-Type: application/json" \
+  -d '{"prediction_type": "zoning"}'
+```
+
+## Integración de Modelos ML
+
+### Opción A: Modelos locales en `models/`
+
+```
+models/
+├── zoning/
+│   ├── model.pkl
+│   ├── preprocessor.pkl
+│   ├── feature_schema.json
+│   └── manifest.json
+├── yield/
+│   ├── xgb_model.pkl
+│   ├── lgbm_model.pkl
+│   ├── preprocessor.pkl
+│   └── feature_schema.json
+└── zoning_reference.parquet
+```
+
+### Opción B: Modelos desde Hugging Face
+
+Configura en `.env`:
+
+```bash
+HF_TOKEN=hf_...
+HF_MODEL_REPO_ZONING=SRBOTOM/agroplan-zonificacion
+HF_MODEL_REPO_YIELD=SRBOTOM/agroplan-rendimiento
+HF_MODEL_REVISION=main
+```
+
+Al iniciar, `app/services/model_loader.py` descarga automáticamente todos los archivos de los repos configurados a `./models/zoning/` y `./models/yield/`. El token solo necesita permiso de lectura. Si un repo es privado, el token es obligatorio; si es público, puedes omitirlo.
+
+El ensamble de rendimiento usa XGBoost con peso 0.65 y LightGBM con peso 0.35. Estos pesos pueden sobrescribirse creando `models/yield/weights.json`:
+
+```json
+{"xgboost": 0.65, "lightgbm": 0.35}
+```
+
+> **Nota:** los modelos publicados en HF son los estimadores finales. Para inferencia real también se requieren `preprocessor.pkl`, `feature_schema.json` y los perfiles Parquet (`municipality_profiles.parquet`, `yield_profiles.parquet`, `zoning_reference.parquet`). Mientras falten, el backend funciona con mocks y el campo `method` indica `mock`.
+
+### Manifiesto de modelos
+
+Ejemplo de `manifest.json`:
+
+```json
+{
+  "model_type": "zoning",
+  "model_family": "lightgbm",
+  "hf_repo": "agroplan/zoning-models",
+  "hf_revision": "abc1234",
+  "artifact_filename": "model.pkl",
+  "sha256": "abcdef123456...",
+  "preprocessor_version": "1.0",
+  "feature_schema": "feature_schema.json"
+}
+```
 
 ## Sincronización de Clima (Open-Meteo)
 
 El backend incluye un job programado que consulta Open-Meteo por coordenadas para cada municipio y guarda los pronósticos en PostgreSQL.
 
 ### Variables almacenadas
+
 - Temperatura mínima, máxima y promedio
 - Precipitación
 - Humedad relativa
@@ -102,226 +578,131 @@ El backend incluye un job programado que consulta Open-Meteo por coordenadas par
 
 ### Ejecución
 
-1. **Población inicial** (3 meses):
+1. **Población inicial** (configurable):
+
 ```bash
-docker-compose exec api python scripts/seed_db.py --force --strict --sync-climate
+docker compose exec api python scripts/seed_db.py --force --strict --sync-climate --limit 50
 ```
 
 2. **Job programado** (dentro del contenedor Docker):
+
 - Actualización diaria: refresca los próximos 7 días y limpia datos antiguos.
 - Extensión semanal: agrega 7 días adicionales al horizonte.
-- Configurable por variables de entorno en `.env`:
-  - `ENABLE_CLIMATE_SYNC=true`
-  - `CLIMATE_SYNC_HOUR=3`
-  - `CLIMATE_SYNC_MINUTE=0`
-  - `CLIMATE_SYNC_BATCH_SIZE=100`
-  - `CLIMATE_SYNC_DELAY_SECONDS=2.0`
-  - `CLIMATE_SYNC_DAYS_AHEAD=90`
-  - `CLIMATE_SYNC_CLEANUP_DAYS=180`
+- Configurable por variables de entorno en `.env`.
 
 ### Monitoreo
+
 ```bash
 curl http://localhost:8000/api/v1/admin/climate-sync/status
 ```
 
 ### Estrategia de respeto al límite gratuito
-- Una sola llamada a Open-Meteo cubre hasta 90 días de forecast por municipio.
-- Los municipios se procesan en lotes de 100 con delays de 2 segundos.
+
+- Una sola llamada a Open-Meteo cubre hasta 16 días de forecast por municipio.
+- Los municipios se procesan en lotes con delays configurables.
 - La carga inicial completa (~1.100 municipios) consume aproximadamente 1.100 requests.
 - El mantenimiento diario consume ~1.100 requests adicionales, dentro del límite de 10.000/día.
 
-## Integración de Modelos ML
+## Despliegue en Oracle Cloud Free Tier
 
-Cuando los modelos XGBoost estén entrenados:
+La imagen está preparada para correr en la capa gratuita de Oracle Cloud:
 
-### 1. Colocar los modelos
-Colocar los archivos `.pkl` o `.joblib` en la carpeta `models/` del backend:
-```
-models/
- zoning_model.pkl      # Modelo de zonificación (XGBoost Classifier)
- calendar_model.pkl    # Modelo de calendarios (XGBoost Regressor)
-```
+- Usa imágenes oficiales multi-arquitectura (`python:3.14-slim` y `postgres:18-alpine`), compatibles con Ampere A1 (ARM64).
+- El modo por defecto `HF_DOWNLOAD_MODE=mvp` descarga solo los modelos estrictamente necesarios, evitando el archivo grande de Random Forest (~1.2 GB) que no se usa en el MVP.
+- El volumen `models_data` persiste los modelos entre reinicios, por lo que no se vuelven a descargar después del primer arranque.
 
-### 2. Actualizar `app/services/model_loader.py`
-Descomentar y ajustar las rutas para cargar los modelos:
-```python
-self.zoning_model = joblib.load("models/zoning_model.pkl")
-self.calendar_model = joblib.load("models/calendar_model.pkl")
-```
+### Recursos recomendados
 
-### 3. Actualizar `app/services/mock_predictor.py`
-Reemplazar la lógica de mock por inferencia real:
-```python
-def predict_zoning(self, crop_id, municipality_id, features):
-    model = model_loader.get_zoning_model()
-    prediction = model.predict(features)
-    return prediction
+| Servicio | Shape recomendado | Notas |
+|---|---|---|
+| VM | `VM.Standard.A1.Flex` (hasta 4 OCPU / 24 GB RAM) | Suficiente para API + PostgreSQL + modelos MVP (~120 MB en memoria). |
+| Alternativa | `VM.Standard.E2.1.Micro` (1/8 OCPU, 1 GB RAM) | Posible pero ajustada; considera desactivar el scheduler (`ENABLE_CLIMATE_SYNC=false`) y usar una base externa. |
+
+### `.env` sugerido para Oracle
+
+```bash
+HF_DOWNLOAD_MODE=mvp
+ENABLE_CLIMATE_SYNC=false
+# Opcional: base de datos gestionada o en el mismo host
+DATABASE_URL=postgresql://agroplan:agroplan@db:5432/agroplan
 ```
 
-### 4. Actualizar health endpoint
-En `app/main.py`, cambiar `models_loaded` a `True` cuando los modelos estén cargados.
+### Primer arranque en Oracle
 
-## Contrato API Completo
+```bash
+# Clonar, copiar env y levantar
+git clone <repo>
+cd 146-AgroPlan-Colombia-Backend
+cp .env.example .env
+# editar .env con HF_TOKEN y demás variables
+docker compose up -d --build
 
-### GET /api/v1/health
-Response:
-```json
-{
-  "status": "ok",
-  "version": "1.0.0",
-  "models_loaded": false
-}
-```
-
-### GET /api/v1/municipalities?department=Antioquia
-Response:
-```json
-{
-  "municipalities": [
-    {
-      "id": "rionegro",
-      "name": "Rionegro",
-      "department": "Antioquia",
-      "lat": 6.155,
-      "lng": -75.374,
-      "altitude": 2125,
-      "avg_temperature": 17,
-      "precipitation": 1900,
-      "dane_code": "05660"
-    }
-  ],
-  "count": 1
-}
+# Migrar y poblar
+docker compose exec api alembic upgrade head
+docker compose exec api python scripts/seed_db.py --force --strict
 ```
 
-### GET /api/v1/weather/{municipality_id}
-Response:
-```json
-{
-  "temperature": 19.0,
-  "condition": "Parcialmente nublado",
-  "humidity": 72,
-  "precipitation": 45,
-  "icon": "partly",
-  "source": "open-meteo",
-  "fetched_at": "2026-07-02T19:30:00Z"
-}
+Tras la primera descarga, los modelos quedan en el volumen `models_data`. Los reinicios posteriores serán rápidos.
+
+## Notas Importantes
+
+- Los endpoints de predicción usan `mock` cuando no hay modelos cargados. El campo `method` indica `mock` o `primary_model`.
+- La caché de predicciones expira al final del mes en `America/Bogota`.
+- Cada predicción se audita en `prediction_runs`.
+- Si el LLM no está disponible, el endpoint de calendario retorna `llm_status: "llm_unavailable"` y `explanation: null` con status 200.
+- Los endpoints admin requieren `X-Admin-API-Key`.
+
+## Base de Datos y Migraciones
+
+### Crear una nueva migración
+
+```bash
+docker compose exec api alembic revision --autogenerate -m "descripcion"
 ```
 
-### GET /api/v1/crops
-Response:
-```json
-{
-  "crops": [
-    {
-      "id": "cafe",
-      "name": "Café",
-      "scientific_name": "Coffea arabica",
-      "image": "/crops/cafe.png",
-      "success_rate": 92,
-      "recommendation": "high",
-      "short_reason": "Clima y altitud ideales en tu zona.",
-      "reason": "...",
-      "days_to_harvest": 270,
-      "soil_type": "Franco, fértil y bien drenado",
-      "ideal_temperature": "18  24 °C",
-      "humidity": "70  80 %",
-      "precipitation": "1.500  2.500 mm / año",
-      "altitude": "1.200  2.000 msnm",
-      "irrigation": "Moderado, mantener humedad constante",
-      "substrates": ["Materia orgánica", "Compost", "Cascarilla de arroz"],
-      "planting_months": [2, 3, 9, 10],
-      "harvest_months": [4, 5, 10, 11],
-      "stages": [...],
-      "tips": [...]
-    }
-  ],
-  "count": 8
-}
+### Aplicar migraciones
+
+```bash
+docker compose exec api alembic upgrade head
 ```
 
-### POST /api/v1/zoning/predict
-Request:
-```json
-{
-  "crop_id": "cafe",
-  "municipality_id": "rionegro"
-}
-```
-Response:
-```json
-{
-  "crop_id": "cafe",
-  "municipality_id": "rionegro",
-  "suitability": "high",
-  "confidence": 0.92,
-  "model_version": "mock-v1",
-  "factors": {
-    "temperature_match": true,
-    "precipitation_match": true,
-    "soil_match": true,
-    "altitude_match": true
-  }
-}
+### Downgrade
+
+```bash
+docker compose exec api alembic downgrade -1
 ```
 
-### POST /api/v1/calendars/predict
-Request:
-```json
-{
-  "crop_id": "cafe",
-  "municipality_id": "rionegro",
-  "month": 7,
-  "year": 2026
-}
-```
-Response:
-```json
-{
-  "crop_id": "cafe",
-  "municipality_id": "rionegro",
-  "month": 7,
-  "year": 2026,
-  "days": [
-    {"day": 1, "rating": "ideal"},
-    {"day": 2, "rating": "acceptable"},
-    ...
-  ],
-  "ideal_count": 12,
-  "model_version": "mock-v1"
-}
+## Tests
+
+```bash
+# Tests completos
+docker compose exec api python -m pytest tests/ -v
+
+# Tests con coverage
+docker compose exec api python -m pytest tests/ --cov=app --cov-report=term-missing
 ```
 
-### POST /api/v1/recommendations
-Request:
-```json
-{
-  "municipality_id": "rionegro"
-}
-```
-Response:
-```json
-{
-  "top_crop": {
-    "id": "cafe",
-    "name": "Café",
-    ...
-    "suitability": "high"
-  },
-  "other_crops": [
-    {
-      "id": "maiz",
-      "name": "Maíz",
-      "image": "/crops/maiz.png",
-      "recommendation": "high",
-      "success_rate": 85
-    }
-  ],
-  "next_planting_season": {
-    "month": 9,
-    "month_name": "Septiembre",
-    "crops": ["cafe", "maiz"]
-  }
-}
+## Troubleshooting
+
+### El contenedor `api` no arranca
+
+```bash
+docker compose logs api
 ```
 
+### PostgreSQL no arranca con PG18
+
+Si el error menciona `/var/lib/postgresql/data`, asegúrate de tener el `docker-compose.yml` actual con el volumen montado en `/var/lib/postgresql` (no `/var/lib/postgresql/data`).
+
+### Modelos no se cargan
+
+```bash
+docker compose exec api python -c "from app.services.model_loader import get_model_loader; print(get_model_loader().get_status())"
+```
+
+### Limpieza total
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```

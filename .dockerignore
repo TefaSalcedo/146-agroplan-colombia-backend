@@ -1,0 +1,48 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Local model/data caches (downloaded at runtime into the models_data volume)
+models/
+data/
+*.parquet
+*.pkl
+*.joblib
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (copied explicitly by docker-compose if needed)
+.env
+.env.*
+!.env.example
+
+# Docker artifacts
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+
+# Documentation that is not needed at runtime
+*.md

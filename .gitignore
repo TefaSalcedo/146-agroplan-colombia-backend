@@ -52,3 +52,12 @@ Thumbs.db
 data/*/
 !data/.gitkeep
 !data/divipola_municipios.csv
+
+# ML model artifacts (downloaded at build time)
+models/
+
+# Virtual environment
+.venv/
+
+# Pytest
+.pytest_cache/

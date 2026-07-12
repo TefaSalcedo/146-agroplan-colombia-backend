@@ -1,106 +1,189 @@
-from fastapi import APIRouter, Depends, HTTPException, Body, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
+
 from app.database import get_db
-from app.services.crop_catalog import CropCatalog
-from app.services.municipality_catalog import MunicipalityCatalog
-from app.services.mock_predictor import MockPredictor
+from app.logger import get_logger
+from app.models import Municipality
 from app.schemas.zoning import (
-    ZoningRequest,
-    ZoningResponse,
-    ZoningBatchRequest,
+    ClimateBasedRecommendation,
+    ZoningBatchCropResult,
     ZoningBatchResponse,
+    ZoningMapMunicipalityResult,
+    ZoningMapResponse,
 )
 from app.schemas.system import ErrorResponse
+from app.services.crop_catalog import CropCatalog
+from app.services.municipality_catalog import MunicipalityCatalog
+from app.services.prediction_service import PredictionService
 
 router = APIRouter(prefix="/zoning", tags=["zoning"])
 municipality_catalog = MunicipalityCatalog()
 crop_catalog = CropCatalog()
-predictor = MockPredictor()
+prediction_service = PredictionService()
+logger = get_logger("app.routers.zoning")
 
 
-@router.post(
-    "/predict",
-    response_model=ZoningResponse,
-    summary="Predict zoning suitability",
+@router.get(
+    "/recommendations/{municipality_id}",
+    response_model=ZoningBatchResponse,
+    summary="Get crop recommendations for a municipality",
     description=(
-        "Returns crop suitability for a municipality using the current mock predictor.\n\n"
-        "Use cases:\n"
-        "- Evaluate if a crop is viable in a selected municipality.\n"
-        "- Explain factors (temperature, precipitation, soil, altitude) behind suitability."
+        "Returns crops recommended for a municipality.\n\n"
+        "The backend evaluates every ML-supported crop with the LightGBM zoning model (or fallback) "
+        "and returns only those with suitability ``high`` or ``medium``. No crop_id is required.\n\n"
+        "The response also includes an additional ``climate_based_recommendations`` list "
+        "with crops recommended by the climate+soil k-NN analog model, excluding crops already "
+        "recommended by LightGBM."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
             "model": ErrorResponse,
-            "description": "Crop or municipality ID not found.",
-        }
+            "description": "Municipality ID not found.",
+        },
     },
 )
-def predict_zoning(
-    request: ZoningRequest = Body(
-        ...,
-        examples={
-            "coffee_manizales": {
-                "summary": "Coffee in a mountain municipality",
-                "value": {"crop_id": "cafe", "municipality_id": "17001"},
-            }
-        },
-    ),
+def get_zoning_recommendations_by_municipality(
+    municipality_id: str = Path(..., description="Municipality DANE code (5 digits)"),
     db: Session = Depends(get_db),
 ):
-    municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
+    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} called (municipality_id=%s)", municipality_id)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", municipality_id)
+    municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    crop = crop_catalog.get_crop_by_id(request.crop_id)
-    if not crop:
-        raise HTTPException(status_code=404, detail="Crop not found")
+    logger.debug("[endpoint] Fetching all ML-supported crops")
+    ml_crops = crop_catalog.get_ml_supported_crops(db)
+    crop_ids = [c.id for c in ml_crops]
+    logger.debug("[endpoint] Evaluating %s crops", len(crop_ids))
 
-    prediction = predictor.predict_zoning(
-        db=db,
-        crop_id=request.crop_id,
-        municipality_id=request.municipality_id,
+    results = []
+    for crop_id in crop_ids:
+        logger.debug("[endpoint] Evaluating crop_id=%s for municipality_id=%s", crop_id, municipality_id)
+        crop = crop_catalog.get_crop_model_by_id(db, crop_id)
+        if not crop:
+            logger.warning("[endpoint] Crop not found, skipping: %s", crop_id)
+            continue
+
+        prediction = prediction_service.predict_zoning(
+            db=db,
+            crop_id=crop_id,
+            municipality_id=municipality_id,
+        )
+
+        results.append(
+            ZoningBatchCropResult(
+                crop_id=crop_id,
+                crop_name=crop.name,
+                suitability=prediction["suitability"],
+                confidence=prediction["confidence"],
+                model_version=prediction["model_version"],
+                method=prediction.get("method", "primary_model"),
+                factors=prediction["factors"],
+                probabilities=prediction.get("probabilities"),
+                warnings=prediction.get("warnings"),
+            )
+        )
+
+    # Keep only crops that LightGBM classified as high or medium.
+    results = [r for r in results if r.suitability in ("high", "medium")]
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} returning %s recommended crops", len(results))
+
+    lightgbm_crop_ids = [r.crop_id for r in results]
+    climate_recs = prediction_service.get_climate_analog_recommendations(
+        db,
+        municipality_id,
+        exclude_crop_ids=lightgbm_crop_ids,
+    )
+    logger.info(
+        "[endpoint] GET /zoning/recommendations/{municipality_id} adding %s climate-based recommendations",
+        len(climate_recs),
     )
 
-    return ZoningResponse(**prediction)
+    return ZoningBatchResponse(
+        municipality_id=municipality_id,
+        municipality_name=municipality.name,
+        results=results,
+        climate_based_recommendations=[ClimateBasedRecommendation(**r) for r in climate_recs],
+        model_version="zoning-lightgbm-v1",
+    )
 
 
-@router.post(
-    "/predict/batch",
-    response_model=ZoningBatchResponse,
-    summary="Predict zoning suitability for all municipalities",
+@router.get(
+    "/map/{crop_id}",
+    response_model=ZoningMapResponse,
+    summary="Get zoning map for a crop",
     description=(
-        "Returns crop suitability predictions for every municipality covered by AgroPlan.\n\n"
-        "Use cases:\n"
-        "- Render a nationwide crop suitability map.\n"
-        "- Compare viability across regions without issuing hundreds of single requests."
+        "Evaluates all municipalities for a crop and returns suitability scores.\n\n"
+        "Uses the CatBoost zoning model with a single batch prediction for all "
+        "municipalities. Only medium/high suitability results are returned to reduce noise. "
+        "The frontend joins results with DANE geometry for rendering."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
             "model": ErrorResponse,
             "description": "Crop ID not found.",
-        }
+        },
     },
 )
-def predict_zoning_batch(
-    request: ZoningBatchRequest,
+def get_zoning_map(
+    crop_id: str = Path(..., description="Crop identifier (e.g. aguacate)"),
     db: Session = Depends(get_db),
 ):
-    crop = crop_catalog.get_crop_by_id(request.crop_id)
+    logger.info("[endpoint] GET /zoning/map/{crop_id} called (crop_id=%s)", crop_id)
+
+    logger.debug("[endpoint] Querying database for crop_id=%s", crop_id)
+    crop = crop_catalog.get_crop_model_by_id(db, crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
-    municipalities = municipality_catalog.get_municipalities(db)
-    raw_predictions = predictor.predict_zoning_batch(
-        db=db,
-        crop_id=request.crop_id,
-        municipalities=municipalities,
+    logger.info("[endpoint] Generating batch zoning map for crop_id=%s", crop_id)
+    predictions_df = prediction_service.predict_zoning_map_batch(db, crop_id)
+
+    if predictions_df is None or predictions_df.empty:
+        logger.warning("[endpoint] No CatBatch predictions available for crop_id=%s", crop_id)
+        raise HTTPException(status_code=503, detail="Zoning map model not available")
+
+    # Build a lookup of municipality coordinates/names from the database
+    municipality_ids = [str(r) for r in predictions_df["cod_dane_m"].tolist()]
+    municipalities = {
+        str(m.dane_code): m
+        for m in db.query(Municipality).filter(Municipality.dane_code.in_(municipality_ids)).all()
+    }
+
+    results = []
+    for _, row in predictions_df.iterrows():
+        muni_id = str(row["cod_dane_m"])
+        muni = municipalities.get(muni_id)
+        if not muni:
+            continue
+        results.append(
+            ZoningMapMunicipalityResult(
+                municipality_id=muni_id,
+                municipality_name=muni.name,
+                dane_code=muni_id,
+                lat=muni.lat,
+                lng=muni.lng,
+                suitability=row["suitability"],
+                confidence=row["confidence"],
+                method=row["method"],
+                probabilities=row["probabilities"],
+            )
+        )
+
+    logger.info(
+        "[endpoint] GET /zoning/map/{crop_id} returning %s medium/high results (method=catboost_batch)",
+        len(results),
     )
-
-    predictions = [ZoningResponse(**prediction) for prediction in raw_predictions]
-
-    return ZoningBatchResponse(
-        crop_id=request.crop_id,
-        predictions=predictions,
-        count=len(predictions),
-        model_version="mock-v1",
+    return ZoningMapResponse(
+        crop_id=crop_id,
+        crop_name=crop.name,
+        model_version="zoning-catboost-v1",
+        method="catboost_batch",
+        results=results,
+        total_municipalities=len(results),
     )

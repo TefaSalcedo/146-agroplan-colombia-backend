@@ -1,0 +1,68 @@
+"""Tests for zoning endpoints."""
+
+
+def test_zoning_recommendations(client):
+    """Municipality-only zoning returns only high/medium crops ranked by confidence."""
+    response = client.get("/api/v1/zoning/recommendations/05001")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["municipality_id"] == "05001"
+    assert data["municipality_name"] == "MEDELL\u00cdN"
+    # Only high or medium suitability crops should be in results
+    for r in data["results"]:
+        assert r["suitability"] in ("high", "medium")
+    # Results should be sorted by confidence descending
+    confidences = [r["confidence"] for r in data["results"]]
+    assert confidences == sorted(confidences, reverse=True)
+    # Each result should have a valid method
+    for r in data["results"]:
+        assert r["method"] in ("primary_model", "climate_analog", "unavailable", "mock")
+
+
+def test_zoning_recommendations_municipality_not_found(client):
+    """Non-existent municipality returns 404."""
+    response = client.get("/api/v1/zoning/recommendations/99999")
+    assert response.status_code == 404
+
+
+def test_zoning_recommendations_include_climate_based(client):
+    """Municipality-only zoning includes climate-based recommendations."""
+    response = client.get("/api/v1/zoning/recommendations/05001")
+    assert response.status_code == 200
+    data = response.json()
+    assert "climate_based_recommendations" in data
+    # Each climate recommendation should have expected fields
+    for rec in data["climate_based_recommendations"]:
+        assert "crop_id" in rec
+        assert "crop_name" in rec
+        assert "score" in rec
+        assert "source" in rec
+        assert rec["source"] == "climate_analog_knn"
+
+
+def test_zoning_map(client):
+    """Zoning map returns medium/high municipalities for the requested crop."""
+    response = client.get("/api/v1/zoning/map/aguacate")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["crop_id"] == "aguacate"
+    assert data["crop_name"] == "Aguacate"
+    assert data["model_version"] == "zoning-catboost-v1"
+    assert data["method"] == "catboost_batch"
+    assert data["total_municipalities"] > 0
+    assert len(data["results"]) == data["total_municipalities"]
+    for r in data["results"]:
+        assert "municipality_id" in r
+        assert "municipality_name" in r
+        assert "suitability" in r
+        assert r["suitability"] in ("high", "medium")
+        assert "confidence" in r
+        assert "method" in r
+        assert "lat" in r
+        assert "lng" in r
+
+
+def test_zoning_map_crop_not_found(client):
+    """Non-existent crop returns 404."""
+    response = client.get("/api/v1/zoning/map/cafe")
+    assert response.status_code == 404

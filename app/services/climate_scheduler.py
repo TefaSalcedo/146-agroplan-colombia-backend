@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -8,6 +11,9 @@ from app.models import ClimateSyncLog
 from app.services.climate_sync import ClimateSyncService
 
 settings = get_settings()
+
+# Advisory lock key for climate sync (arbitrary fixed int)
+_CLIMATE_SYNC_ADVISORY_LOCK = 20250101
 
 
 def _create_db_session() -> Session:
@@ -24,17 +30,33 @@ def _close_db_session(db: Session) -> None:
 
 
 def _run_sync_job(sync_type: str, days: int, cleanup: bool = False) -> None:
-    """Execute a climate sync job in a background thread."""
+    """Execute a climate sync job in a background thread with advisory lock."""
     db = _create_db_session()
     try:
-        service = ClimateSyncService(
-            batch_size=settings.climate_sync_batch_size,
-            delay_seconds=settings.climate_sync_delay_seconds,
-        )
-        service.run_sync(db, sync_type, days)
+        # Try to acquire a session-level advisory lock
+        result = db.execute(
+            text("SELECT pg_try_advisory_lock(:lock_key)"),
+            {"lock_key": _CLIMATE_SYNC_ADVISORY_LOCK},
+        ).scalar()
 
-        if cleanup:
-            service.delete_old_forecasts(db, keep_days=settings.climate_sync_cleanup_days)
+        if not result:
+            print("[climate_scheduler] Another sync job is already running. Skipping.")
+            return
+
+        try:
+            service = ClimateSyncService(
+                batch_size=settings.climate_sync_batch_size,
+                delay_seconds=settings.climate_sync_delay_seconds,
+            )
+            service.run_sync(db, sync_type, days)
+
+            if cleanup:
+                service.delete_old_forecasts(db, keep_days=settings.climate_sync_cleanup_days)
+        finally:
+            db.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": _CLIMATE_SYNC_ADVISORY_LOCK},
+            )
     finally:
         _close_db_session(db)
 
@@ -48,9 +70,7 @@ def _offset_daily_time(hour: int, minute: int, offset_minutes: int) -> tuple[int
 def get_scheduler() -> BackgroundScheduler:
     """Build and return a configured APScheduler instance."""
     scheduler = BackgroundScheduler()
-    scheduler.configure(
-        executors={"default": {"type": "threadpool", "max_workers": 1}}
-    )
+    scheduler.configure(executors={"default": {"type": "threadpool", "max_workers": 1}})
     return scheduler
 
 

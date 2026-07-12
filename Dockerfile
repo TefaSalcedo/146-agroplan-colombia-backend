@@ -1,13 +1,36 @@
-FROM python:3.12-slim
+FROM python:3.14-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies for PostgreSQL and ML libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.14-slim
 
 WORKDIR /app
 
-# Install system dependencies for PostgreSQL
-RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies for PostgreSQL and ML libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder /install /usr/local
+
+WORKDIR /app
+
+# Create models directory with writable permissions so the container can
+# download and cache Hugging Face artifacts at runtime when HF_TOKEN is provided.
+RUN mkdir -p /app/models && chmod 777 /app/models
 
 COPY . .
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
