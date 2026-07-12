@@ -7,15 +7,23 @@ returns the fresh value. This makes every request act as an incremental sync.
 
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.logger import get_logger
-from app.models import Municipality, MunicipalityClimateForecast, MunicipalityCurrentWeather
+from app.models import (
+    Municipality,
+    MunicipalityClimateForecast,
+    MunicipalityCurrentWeather,
+    MunicipalityMonthlyClimateForecast,
+)
 from app.services.open_meteo import OpenMeteoService
 
 logger = get_logger("app.services.climate_data_service")
+
+BOGOTA_TZ = ZoneInfo("America/Bogota")
 
 
 class ClimateDataService:
@@ -25,7 +33,7 @@ class ClimateDataService:
         self.open_meteo = open_meteo_service or OpenMeteoService()
 
     def _today(self) -> date:
-        return datetime.now(timezone.utc).date()
+        return datetime.now(BOGOTA_TZ).date()
 
     def get_forecast_records(
         self,
@@ -33,11 +41,11 @@ class ClimateDataService:
         municipality: Municipality,
         days: int,
     ) -> List[MunicipalityClimateForecast]:
-        """Return forecast records for the next ``days`` days, fetching missing days from Open-Meteo.
+        """Return forecast records from today through today + ``days`` (inclusive).
 
-        The method is forgiving: it returns whatever is already stored plus any
-        newly fetched records. If Open-Meteo fails, it returns the stored data
-        without raising so that endpoints remain available.
+        Dates are interpreted in the America/Bogota timezone so that "today"
+        matches the user's local date. If Open-Meteo fails, the stored data is
+        returned without raising so endpoints remain available.
         """
         today = self._today()
         end_date = today + timedelta(days=days)
@@ -57,7 +65,7 @@ class ClimateDataService:
             .all()
         )
         stored_dates = {record.forecast_date for record in stored}
-        requested_dates = {today + timedelta(days=i) for i in range(days)}
+        requested_dates = {today + timedelta(days=i) for i in range(days + 1)}
         missing_dates = sorted(requested_dates - stored_dates)
 
         logger.debug(
@@ -76,7 +84,8 @@ class ClimateDataService:
                 fetched = self.open_meteo.get_daily_forecast(
                     lat=municipality.lat,
                     lng=municipality.lng,
-                    days=days,
+                    start_date=today,
+                    end_date=end_date,
                 )
                 if fetched:
                     self._upsert_forecast_records(db, municipality.dane_code, fetched)
@@ -242,3 +251,167 @@ class ClimateDataService:
             "[get_current_weather] Cached current weather for %s",
             municipality_dane_code,
         )
+
+    def get_monthly_forecast_records(
+        self,
+        db: Session,
+        municipality: Municipality,
+        months: int,
+        max_age_days: int = 30,
+    ) -> List[MunicipalityMonthlyClimateForecast]:
+        """Return monthly seasonal forecast records, fetching missing months from Open-Meteo.
+
+        The seasonal forecast is updated once per month, so records are considered
+        fresh while they are younger than ``max_age_days``. Missing months are fetched
+        in a single Open-Meteo call and persisted.
+        """
+        today = self._today()
+        current_month = today.replace(day=1)
+        requested_months = []
+        cursor = current_month
+        for _ in range(months):
+            requested_months.append(cursor)
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+
+        logger.debug(
+            "[get_monthly_forecast_records] Looking up stored forecasts for %s from %s",
+            municipality.dane_code,
+            requested_months,
+        )
+
+        stored = (
+            db.query(MunicipalityMonthlyClimateForecast)
+            .filter(
+                MunicipalityMonthlyClimateForecast.municipality_dane_code == municipality.dane_code
+            )
+            .filter(MunicipalityMonthlyClimateForecast.forecast_month.in_(requested_months))
+            .order_by(MunicipalityMonthlyClimateForecast.forecast_month.asc())
+            .all()
+        )
+
+        # Determine which months are missing or stale.
+        ttl = timedelta(days=max_age_days)
+        now = datetime.now(BOGOTA_TZ)
+        valid_by_month = {}
+        for record in stored:
+            if record.fetched_at and (now - record.fetched_at) <= ttl:
+                valid_by_month[record.forecast_month] = record
+
+        missing_months = [m for m in requested_months if m not in valid_by_month]
+
+        logger.debug(
+            "[get_monthly_forecast_records] Stored %s records, missing/stale %s months",
+            len(valid_by_month),
+            len(missing_months),
+        )
+
+        if missing_months:
+            logger.info(
+                "[get_monthly_forecast_records] Fetching %s monthly forecast months for %s from Open-Meteo",
+                len(missing_months),
+                municipality.dane_code,
+            )
+            try:
+                # Ask for a slightly longer horizon so Open-Meteo returns complete
+                # monthly aggregates for all requested months.
+                fetched = self.open_meteo.get_monthly_seasonal_forecast(
+                    lat=municipality.lat,
+                    lng=municipality.lng,
+                    months=months + 1,
+                )
+                # Drop any months before the current month; the API may return the
+                # trailing part of the previous month depending on the forecast horizon.
+                fetched = [r for r in fetched if r.get("forecast_month") and r["forecast_month"] >= current_month]
+                if fetched:
+                    self._upsert_monthly_forecast_records(db, municipality.dane_code, fetched)
+                    logger.info(
+                        "[get_monthly_forecast_records] Saved %s monthly forecast records for %s",
+                        len(fetched),
+                        municipality.dane_code,
+                    )
+                    # Re-read so returned ORM objects include new rows.
+                    stored = (
+                        db.query(MunicipalityMonthlyClimateForecast)
+                        .filter(
+                            MunicipalityMonthlyClimateForecast.municipality_dane_code
+                            == municipality.dane_code
+                        )
+                        .filter(MunicipalityMonthlyClimateForecast.forecast_month.in_(requested_months))
+                        .order_by(MunicipalityMonthlyClimateForecast.forecast_month.asc())
+                        .all()
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[get_monthly_forecast_records] Open-Meteo fetch failed for %s: %s",
+                    municipality.dane_code,
+                    exc,
+                )
+
+        return stored
+
+    def _upsert_monthly_forecast_records(
+        self,
+        db: Session,
+        municipality_dane_code: str,
+        records: List[dict],
+    ) -> None:
+        """Upsert monthly seasonal forecast records into the database."""
+        now = datetime.now(timezone.utc)
+        rows = []
+        for record in records:
+            forecast_month = record.get("forecast_month")
+            if not forecast_month:
+                continue
+
+            temp_anomaly = record.get("temp_anomaly")
+            precip_anomaly = record.get("precipitation_anomaly")
+            trend_parts = []
+            if temp_anomaly is not None:
+                if temp_anomaly > 0.5:
+                    trend_parts.append("warmer")
+                elif temp_anomaly < -0.5:
+                    trend_parts.append("cooler")
+            if precip_anomaly is not None:
+                if precip_anomaly > 10:
+                    trend_parts.append("wetter")
+                elif precip_anomaly < -10:
+                    trend_parts.append("drier")
+            trend = "_".join(trend_parts) if trend_parts else "neutral"
+
+            rows.append(
+                {
+                    "municipality_dane_code": municipality_dane_code,
+                    "forecast_month": forecast_month,
+                    "temp_mean": record.get("temp_mean"),
+                    "temp_anomaly": temp_anomaly,
+                    "precipitation": record.get("precipitation"),
+                    "precipitation_anomaly": precip_anomaly,
+                    "trend": trend,
+                    "source": record.get("source", "open-meteo-seasonal"),
+                    "fetched_at": now,
+                    "updated_at": now,
+                }
+            )
+
+        if not rows:
+            return
+
+        stmt = pg_insert(MunicipalityMonthlyClimateForecast).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_monthly_climate_forecast",
+            set_={
+                "temp_mean": stmt.excluded.temp_mean,
+                "temp_anomaly": stmt.excluded.temp_anomaly,
+                "precipitation": stmt.excluded.precipitation,
+                "precipitation_anomaly": stmt.excluded.precipitation_anomaly,
+                "trend": stmt.excluded.trend,
+                "source": stmt.excluded.source,
+                "fetched_at": stmt.excluded.fetched_at,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        db.execute(stmt)
+        db.commit()

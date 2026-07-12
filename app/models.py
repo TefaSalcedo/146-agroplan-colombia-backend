@@ -87,6 +87,32 @@ class MunicipalityClimateForecast(Base):
     )
 
 
+class MunicipalityMonthlyClimateForecast(Base):
+    __tablename__ = "municipality_monthly_climate_forecasts"
+    __table_args__ = (
+        UniqueConstraint(
+            "municipality_dane_code", "forecast_month",
+            name="uq_monthly_climate_forecast",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    municipality_dane_code = Column(
+        String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True
+    )
+    forecast_month = Column(Date, nullable=False, index=True)
+    temp_mean = Column(Float, nullable=True)
+    temp_anomaly = Column(Float, nullable=True)
+    precipitation = Column(Float, nullable=True)
+    precipitation_anomaly = Column(Float, nullable=True)
+    trend = Column(String(50), nullable=True)
+    source = Column(String(50), nullable=False, default="open-meteo-seasonal")
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class MunicipalityCurrentWeather(Base):
     __tablename__ = "municipality_current_weather"
     __table_args__ = (

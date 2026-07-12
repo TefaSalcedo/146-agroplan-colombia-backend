@@ -132,27 +132,43 @@ class OpenMeteoService:
         self,
         lat: float,
         lng: float,
-        days: int = 90
+        days: int | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[dict]:
         """Get daily forecast from Open-Meteo Forecast API.
 
         Returns a list of daily records with temperature, precipitation, humidity,
-        UV index and wind speed. One Open-Meteo call covers all requested days.
+        UV index and wind speed. Either ``days`` or both ``start_date`` and
+        ``end_date`` must be provided. When ``start_date``/``end_date`` are given,
+        the API is constrained to that exact interval, which avoids returning
+        dates before today in non-UTC timezones.
         """
         url = f"{self.base_url}/v1/forecast"
         daily_vars = (
             "temperature_2m_min,temperature_2m_max,temperature_2m_mean,"
             "precipitation_sum,relative_humidity_2m_mean,uv_index_max,wind_speed_10m_max"
         )
-        params = {
+        params: dict[str, str | int | float] = {
             "latitude": lat,
             "longitude": lng,
             "daily": daily_vars,
-            "forecast_days": days,
-            "timezone": "America/Bogota"
+            "timezone": "America/Bogota",
         }
 
-        logger.debug("[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
+        if start_date and end_date:
+            params["start_date"] = start_date.isoformat()
+            params["end_date"] = end_date.isoformat()
+            logger.debug(
+                "[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, %s to %s)",
+                lat, lng, start_date, end_date,
+            )
+        elif days is not None:
+            params["forecast_days"] = days
+            logger.debug("[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
+        else:
+            raise ValueError("Either days or both start_date and end_date must be provided")
+
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             response = client.get(url, params=params)
             response.raise_for_status()
@@ -179,6 +195,67 @@ class OpenMeteoService:
                 "humidity": daily.get("relative_humidity_2m_mean", [])[idx] if idx < len(daily.get("relative_humidity_2m_mean", [])) else None,
                 "uv_index": daily.get("uv_index_max", [])[idx] if idx < len(daily.get("uv_index_max", [])) else None,
                 "wind_speed": daily.get("wind_speed_10m_max", [])[idx] if idx < len(daily.get("wind_speed_10m_max", [])) else None,
+            })
+
+        return records
+
+    def get_monthly_seasonal_forecast(
+        self,
+        lat: float,
+        lng: float,
+        months: int = 4,
+    ) -> list[dict]:
+        """Get monthly seasonal forecast from Open-Meteo Seasonal API.
+
+        Returns a list of monthly records with mean temperature, precipitation
+        and anomalies for the requested horizon. SEAS5 provides forecasts up to
+        7 months ahead and is updated monthly.
+        """
+        url = "https://seasonal-api.open-meteo.com/v1/seasonal"
+        params = {
+            "latitude": lat,
+            "longitude": lng,
+            "models": "ecmwf_seas5",
+            "monthly": (
+                "temperature_2m_mean,temperature_2m_anomaly,"
+                "precipitation_mean,precipitation_anomaly"
+            ),
+            "forecast_days": months * 30,
+            "timezone": "America/Bogota",
+        }
+
+        logger.debug(
+            "[get_monthly_seasonal_forecast] Calling Open-Meteo Seasonal (lat=%s, lng=%s, months=%s)",
+            lat, lng, months,
+        )
+        with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        monthly = data.get("monthly", {})
+        dates = monthly.get("time", [])
+        if not dates:
+            return []
+
+        records = []
+        for idx, date_str in enumerate(dates):
+            try:
+                parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
+                # Open-Meteo returns the last day of the month in the requested
+                # timezone. Normalize to the first day of the month for clarity.
+                forecast_month = parsed.replace(day=1)
+            except (ValueError, TypeError):
+                continue
+
+            records.append({
+                "forecast_month": forecast_month,
+                "temp_mean": monthly.get("temperature_2m_mean", [])[idx] if idx < len(monthly.get("temperature_2m_mean", [])) else None,
+                "temp_anomaly": monthly.get("temperature_2m_anomaly", [])[idx] if idx < len(monthly.get("temperature_2m_anomaly", [])) else None,
+                "precipitation": monthly.get("precipitation_mean", [])[idx] if idx < len(monthly.get("precipitation_mean", [])) else None,
+                "precipitation_anomaly": monthly.get("precipitation_anomaly", [])[idx] if idx < len(monthly.get("precipitation_anomaly", [])) else None,
+                "source": "open-meteo-seasonal",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             })
 
         return records

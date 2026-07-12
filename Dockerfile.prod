@@ -60,19 +60,22 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONFAULTHANDLER=1
+    PYTHONFAULTHANDLER=1 \
+    HF_HOME=/app/.cache/huggingface \
+    MPLCONFIGDIR=/tmp/matplotlib
 
 # Create the models directory where Hugging Face artifacts are downloaded at
 # runtime. It is owned by appuser so the container can write without needing
-# world-writable permissions.
-RUN mkdir -p /app/models && chown -R appuser:appgroup /app
+# world-writable permissions. Also create the HF cache directory.
+RUN mkdir -p /app/models /app/.cache/huggingface && chown -R appuser:appgroup /app
 
 # Copy only the application source code. The .dockerignore file excludes
 # .venv, models/, data/, .git, tests, docs and other build artifacts.
 COPY --chown=appuser:appgroup . .
 
-# Switch to the non-root user.
-USER appuser
+# Copy the entrypoint script and make it executable. The entrypoint runs as
+# root to fix permissions on mounted volumes, then drops to appuser.
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Expose the FastAPI port.
 EXPOSE 8000
@@ -81,6 +84,11 @@ EXPOSE 8000
 # Render injects PORT dynamically; fall back to 8000 for local runs.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/api/v1/health')" || exit 1
+
+# The entrypoint fixes permissions on /app/models (which may be a mounted
+# volume owned by root) and then drops privileges to appuser before
+# executing the CMD.
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Render (and other PaaS providers) set the PORT env variable dynamically.
 # Default to 8000 so local/docker-compose usage keeps working.
