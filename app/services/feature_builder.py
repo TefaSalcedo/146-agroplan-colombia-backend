@@ -294,12 +294,21 @@ def build_yield_features(
     last = hist.iloc[-1]
     dane_int = int(municipality_id)
 
-    # Try to get lat/lon from municipality profiles; fallback to 0 if unavailable
-    lat, lon = 0.0, 0.0
+    # Try to get lat/lon from municipality profiles; otherwise query the DB.
+    lat, lon = None, None
     profile = _get_municipality_profile(loader, municipality_id)
     if profile is not None:
-        lat = float(profile.get("latitud", 0.0))
-        lon = float(profile.get("longitud", 0.0))
+        lat = float(profile.get("latitud"))
+        lon = float(profile.get("longitud"))
+    else:
+        from app.models import Municipality
+        municipality = db.query(Municipality).filter(Municipality.dane_code == municipality_id).first()
+        if municipality is not None:
+            lat = float(municipality.latitude) if municipality.latitude is not None else None
+            lon = float(municipality.longitude) if municipality.longitude is not None else None
+
+    lat = lat or 0.0
+    lon = lon or 0.0
 
     # Common base values
     base: Dict[str, Any] = {

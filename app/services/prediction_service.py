@@ -40,47 +40,30 @@ def _parse_months_string(value: Any) -> List[int]:
     return [int(m.strip()) for m in str(value).split(",") if m.strip().isdigit()]
 
 
-# Fallback planting months for the 7 zoning crops when FAO calendar is missing.
-# Based on typical Colombian agronomic windows + EcoCrop cycle data.
-_DEFAULT_PLANTING_MONTHS = {
-    "aguacate": [3, 4, 9, 10],
-    "pina": [3, 4, 5, 6],
-    "cebolla": [3, 4, 9, 10],
-    "fresa": [3, 4, 9, 10],
-    "soya": [3, 4, 9, 10],
-    "cana_panelera": [3, 4, 5, 6],
-    "algodon": [3, 4, 9, 10],
-}
-
-
 def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str, Any]:
-    """Return crop calendar info from EVA/FAO data or fallback to defaults.
+    """Return crop calendar info strictly from EVA/FAO datasets.
 
-    The EVA/FAO calendar only covers onion and soybean for our 7 crops. For the
-    rest we use EcoCrop cycle duration (gmin/gmax) and a default planting window.
+    No hardcoded agronomic windows are used. If the external calendar does not
+    provide a value, the field is returned empty/None so the caller can decide
+    whether to surface the uncertainty instead of inventing data.
     """
-    from app.services.crop_catalog import CropCatalog
-
-    crop_catalog = CropCatalog()
-    crop = crop_catalog.get_crop_model_by_id(db, crop_id)
-
-    defaults = {
-        "planting_months": crop.planting_months if crop and crop.planting_months else _DEFAULT_PLANTING_MONTHS.get(crop_id, []),
-        "duration_days_min": crop.days_to_harvest if crop else 90,
-        "duration_days_max": crop.days_to_harvest if crop else 120,
-        "cycle_days_min": crop.days_to_harvest if crop else 90,
-        "cycle_days_max": crop.days_to_harvest if crop else 120,
+    info: Dict[str, Any] = {
+        "planting_months": [],
+        "duration_days_min": None,
+        "duration_days_max": None,
+        "cycle_days_min": None,
+        "cycle_days_max": None,
     }
 
     if loader is None or loader.calendar_for_eva is None:
-        return defaults
+        return info
 
     try:
         from app.services.feature_builder import _get_calendar_row
 
         row = _get_calendar_row(loader, crop_id)
         if row is None:
-            return defaults
+            return info
 
         fao_months = _parse_months_string(row.get("fao_sowing_months"))
         gmin = row.get("gmin_dias")
@@ -94,20 +77,14 @@ def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str,
             v = int(value)
             return v if v > 0 else None
 
-        dur_min = _valid_int(fao_dur_min) or _valid_int(gmin) or defaults["duration_days_min"]
-        dur_max = _valid_int(fao_dur_max) or _valid_int(gmax) or defaults["duration_days_max"]
-        cycle_min = _valid_int(gmin) or defaults["cycle_days_min"]
-        cycle_max = _valid_int(gmax) or defaults["cycle_days_max"]
-
-        return {
-            "planting_months": fao_months if fao_months else defaults["planting_months"],
-            "duration_days_min": dur_min,
-            "duration_days_max": dur_max,
-            "cycle_days_min": cycle_min,
-            "cycle_days_max": cycle_max,
-        }
+        info["planting_months"] = fao_months
+        info["duration_days_min"] = _valid_int(fao_dur_min) or _valid_int(gmin)
+        info["duration_days_max"] = _valid_int(fao_dur_max) or _valid_int(gmax)
+        info["cycle_days_min"] = _valid_int(gmin)
+        info["cycle_days_max"] = _valid_int(gmax)
+        return info
     except Exception:
-        return defaults
+        return info
 
 
 def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str) -> Optional[Dict]:
@@ -492,17 +469,18 @@ class PredictionService:
                 avg_humidity = sum(r.humidity for r in records if r.humidity) / max(1, len(records))
                 climate_source = "open_meteo_forecast"
             else:
-                avg_temp = 22.0
-                avg_precip = 100.0
-                avg_humidity = 75.0
-                climate_source = "historical_climatology"
+                # No forecast and no hardcoded climatology: report missing data.
+                avg_temp = None
+                avg_precip = None
+                avg_humidity = None
+                climate_source = "not_available"
 
             monthly_forecasts.append({
                 "month": month,
                 "year": year,
-                "temp_mean": round(avg_temp, 1) if avg_temp else None,
-                "precipitation": round(avg_precip, 1) if avg_precip else None,
-                "humidity": round(avg_humidity, 1) if avg_humidity else None,
+                "temp_mean": round(avg_temp, 1) if avg_temp is not None else None,
+                "precipitation": round(avg_precip, 1) if avg_precip is not None else None,
+                "humidity": round(avg_humidity, 1) if avg_humidity is not None else None,
                 "climate_source": climate_source,
             })
 
@@ -521,10 +499,12 @@ class PredictionService:
         duration_min = calendar_info["duration_days_min"]
         duration_max = calendar_info["duration_days_max"]
 
-        # Determine top 3 harvest months from planting months + cycle duration
+        # Determine top 3 harvest months only when planting months and cycle
+        # duration are available from the EVA/FAO datasets.
         top_harvest = []
+        warnings: List[str] = []
         current_year = today.year
-        if planting_months:
+        if planting_months and duration_min and duration_max:
             candidates = []
             for pm in planting_months:
                 # If planting month is before current month, assume next year
@@ -541,11 +521,10 @@ class PredictionService:
 
             # Score by closeness to current month and yield signal
             for cand in candidates:
-                # Month distance (0 = current month, lower is better)
                 month_dist = abs(((cand["harvest_month"] - today.month) + 6) % 12 - 6)
                 yield_score = 0.0
                 if yield_result and yield_result.get("yield_prediction") is not None:
-                    # Normalize crudely: higher yield = higher score
+                    # Normalize yield signal: 30 t/ha is treated as a high anchor.
                     yield_score = min(1.0, max(0.0, yield_result["yield_prediction"] / 30.0))
                 cand["score"] = round(0.7 * (1 - month_dist / 6.0) + 0.3 * yield_score, 3)
 
@@ -562,19 +541,7 @@ class PredictionService:
                     "duration_days_max": duration_max,
                 })
         else:
-            # Fallback: spread across horizon
-            for i in range(min(3, horizon_months)):
-                mf = monthly_forecasts[i]
-                top_harvest.append({
-                    "harvest_month": mf["month"],
-                    "harvest_year": mf["year"],
-                    "harvest_month_name": MONTHS_LONG[mf["month"] - 1],
-                    "score": 0.75 - (i * 0.1),
-                    "planting_months": crop.planting_months or [],
-                    "planting_year": mf["year"],
-                    "duration_days_min": duration_min,
-                    "duration_days_max": duration_max,
-                })
+            warnings.append("No calendar data available from EVA/FAO for this crop; harvest windows cannot be computed.")
 
         if yield_result:
             return {
@@ -585,10 +552,11 @@ class PredictionService:
                 "yield_confidence": yield_result["yield_confidence"],
                 "top_harvest_months": top_harvest,
                 "monthly_forecasts": monthly_forecasts,
-                "warnings": [],
+                "warnings": warnings,
                 "method": yield_result["method"],
             }
 
+        warnings.append("Mock prediction - ML models not yet loaded")
         return {
             "crop_id": crop_id,
             "crop_name": crop.name,
@@ -597,6 +565,6 @@ class PredictionService:
             "yield_confidence": "low",
             "top_harvest_months": top_harvest,
             "monthly_forecasts": monthly_forecasts,
-            "warnings": ["Mock prediction - ML models not yet loaded"],
+            "warnings": warnings,
             "method": "mock",
         }
