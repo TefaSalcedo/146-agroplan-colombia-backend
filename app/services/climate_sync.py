@@ -143,7 +143,7 @@ class ClimateSyncService:
         for attempt in range(self.max_retries):
             try:
                 logger.debug("[_fetch_with_retry] Open-Meteo attempt %s/%s", attempt + 1, self.max_retries)
-                return await self.weather_service.get_daily_forecast(lat, lng, days)
+                return await asyncio.to_thread(self.weather_service.get_daily_forecast, lat, lng, days)
             except Exception as e:
                 logger.warning("[_fetch_with_retry] Open-Meteo attempt %s failed: %s", attempt + 1, e)
                 if attempt == self.max_retries - 1:

@@ -226,9 +226,9 @@ docker compose restart api
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/v1/weather/{municipality_id}` | Clima actual desde Open-Meteo |
-| `GET` | `/api/v1/forecast/daily/{municipality_id}?days=7` | Pronóstico diario almacenado |
-| `GET` | `/api/v1/alerts/{municipality_id}` | Alertas climáticas corto plazo |
+| `GET` | `/api/v1/weather/{municipality_id}` | Clima actual (BD con fallback a Open-Meteo) |
+| `GET` | `/api/v1/forecast/daily/{municipality_id}?days=7` | Pronóstico diario (BD con fallback a Open-Meteo) |
+| `GET` | `/api/v1/alerts/{municipality_id}` | Alertas climáticas corto plazo (BD con fallback a Open-Meteo) |
 
 ### Crops
 
@@ -243,6 +243,7 @@ docker compose restart api
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `POST` | `/api/v1/zoning/predict` | Zonificación para un cultivo y municipio |
+| `GET` | `/api/v1/zoning/recommendations/{municipality_id}` | Ranking de cultivos para un municipio (solo municipio) |
 | `POST` | `/api/v1/zoning/recommendations` | Ranking de todos los cultivos para un municipio |
 | `GET` | `/api/v1/zoning/map/{crop_id}` | Mapa de zonificación para todos los municipios |
 
@@ -257,7 +258,7 @@ docker compose restart api
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `POST` | `/api/v1/recommendations` | Top cultivos recomendados para un municipio |
+| `POST` | `/api/v1/recommendations` | Top cultivos recomendados para un municipio (modelo LightGBM) |
 
 ### Admin (requieren `X-Admin-API-Key`)
 

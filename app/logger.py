@@ -15,7 +15,7 @@ def configure_logging() -> None:
     """Configure the root logger once based on application settings."""
     settings = get_settings()
 
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    level = getattr(logging, settings.log_level.upper(), logging.DEBUG)
 
     # Avoid duplicate handlers when the module is reloaded (e.g., uvicorn --reload)
     root = logging.getLogger()

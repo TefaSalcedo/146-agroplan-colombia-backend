@@ -1,8 +1,10 @@
 import httpx
 from datetime import datetime, date, timezone
 from app.config import get_settings
+from app.logger import get_logger
 
 settings = get_settings()
+logger = get_logger("app.services.open_meteo")
 
 
 # WMO Weather Code mapping to frontend icons and conditions
@@ -70,7 +72,7 @@ class OpenMeteoService:
         """Map WMO weather code to condition and icon"""
         return WEATHER_CODE_MAP.get(code, {"condition": "Desconocido", "icon": "cloud"})
     
-    async def get_current_weather(self, lat: float, lng: float) -> dict:
+    def get_current_weather(self, lat: float, lng: float) -> dict:
         """Get current weather from Open-Meteo Forecast API"""
         url = f"{self.base_url}/v1/forecast"
         params = {
@@ -79,16 +81,17 @@ class OpenMeteoService:
             "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code",
             "timezone": "America/Bogota"
         }
-        
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = await client.get(url, params=params)
+
+        logger.debug("[get_current_weather] Calling Open-Meteo (lat=%s, lng=%s)", lat, lng)
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-        
+
         current = data.get("current", {})
         weather_code = current.get("weather_code", 0)
         weather_info = self._map_weather_code(weather_code)
-        
+
         return {
             "temperature": round(current.get("temperature_2m", 0), 1),
             "condition": weather_info["condition"],
@@ -99,7 +102,7 @@ class OpenMeteoService:
             "fetched_at": datetime.now(timezone.utc).isoformat()
         }
     
-    async def get_historical_weather(
+    def get_historical_weather(
         self,
         lat: float,
         lng: float,
@@ -117,14 +120,15 @@ class OpenMeteoService:
             "timezone": "America/Bogota"
         }
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = await client.get(url, params=params)
+        logger.debug("[get_historical_weather] Calling Open-Meteo Archive (lat=%s, lng=%s)", lat, lng)
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
 
         return data
 
-    async def get_daily_forecast(
+    def get_daily_forecast(
         self,
         lat: float,
         lng: float,
@@ -148,8 +152,9 @@ class OpenMeteoService:
             "timezone": "America/Bogota"
         }
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = await client.get(url, params=params)
+        logger.debug("[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
 

@@ -3,14 +3,14 @@ from httpx import HTTPError
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.logger import get_logger
+from app.services.climate_data_service import ClimateDataService
 from app.services.municipality_catalog import MunicipalityCatalog
-from app.services.open_meteo import OpenMeteoService
 from app.schemas.weather import WeatherResponse
 from app.schemas.system import ErrorResponse
 
 router = APIRouter(prefix="/weather", tags=["weather"])
 municipality_catalog = MunicipalityCatalog()
-weather_service = OpenMeteoService()
+climate_data_service = ClimateDataService()
 logger = get_logger("app.routers.weather")
 
 
@@ -35,7 +35,7 @@ logger = get_logger("app.routers.weather")
         },
     },
 )
-async def get_weather(
+def get_weather(
     municipality_id: str = Path(..., description="AgroPlan municipality ID"),
     db: Session = Depends(get_db),
 ):
@@ -46,11 +46,11 @@ async def get_weather(
         logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    logger.info("[endpoint] Calling Open-Meteo for municipality_id=%s (lat=%s, lng=%s)", municipality_id, municipality.lat, municipality.lng)
+    logger.info("[endpoint] Calling ClimateDataService for municipality_id=%s", municipality_id)
     try:
-        weather_data = await weather_service.get_current_weather(
-            lat=municipality.lat,
-            lng=municipality.lng,
+        weather_data = climate_data_service.get_current_weather(
+            db=db,
+            municipality=municipality,
         )
     except HTTPError as exc:
         logger.error("[endpoint] Open-Meteo request failed for municipality_id=%s: %s", municipality_id, exc)

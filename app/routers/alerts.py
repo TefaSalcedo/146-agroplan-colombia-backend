@@ -8,9 +8,11 @@ from app.logger import get_logger
 from app.models import Municipality, MunicipalityClimateForecast
 from app.schemas.alerts import AlertResponse
 from app.schemas.system import ErrorResponse
+from app.services.climate_data_service import ClimateDataService
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 logger = get_logger("app.routers.alerts")
+climate_data_service = ClimateDataService()
 
 
 def _generate_alerts_from_forecasts(
@@ -117,14 +119,11 @@ def get_alerts(
         logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    today = datetime.now(timezone.utc).date()
-    logger.debug("[endpoint] Querying database for forecast records")
-    forecasts = (
-        db.query(MunicipalityClimateForecast)
-        .filter(MunicipalityClimateForecast.municipality_dane_code == municipality_id)
-        .filter(MunicipalityClimateForecast.forecast_date >= today)
-        .filter(MunicipalityClimateForecast.forecast_date <= today + timedelta(days=14))
-        .all()
+    logger.debug("[endpoint] Fetching forecast records via ClimateDataService")
+    forecasts = climate_data_service.get_forecast_records(
+        db=db,
+        municipality=municipality,
+        days=14,
     )
     logger.debug("[endpoint] Found %s forecast records", len(forecasts))
 

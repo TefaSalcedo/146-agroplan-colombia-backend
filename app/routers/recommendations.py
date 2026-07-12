@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.logger import get_logger
-from app.schemas.crop import CropResponseLite, TopCropResponse
+from app.schemas.crop import CropResponseLite, GrowthStage, Tip, TopCropResponse
 from app.schemas.recommendation import (
     NextPlantingSeason,
     RecommendationRequest,
@@ -13,13 +13,13 @@ from app.schemas.recommendation import (
 )
 from app.schemas.system import ErrorResponse
 from app.services.crop_catalog import CropCatalog
-from app.services.mock_predictor import MockPredictor
 from app.services.municipality_catalog import MunicipalityCatalog
+from app.services.prediction_service import PredictionService
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 municipality_catalog = MunicipalityCatalog()
 crop_catalog = CropCatalog()
-predictor = MockPredictor()
+prediction_service = PredictionService()
 logger = get_logger("app.routers.recommendations")
 
 MONTHS_LONG = [
@@ -31,16 +31,15 @@ MONTHS_LONG = [
 @router.post(
     "",
     response_model=RecommendationResponse,
-    summary="[MOCK] Get crop recommendations (not for MVP)",
+    summary="Get crop recommendations for a municipality",
     description=(
-        "⚠️ MOCK ENDPOINT — NOT INTENDED FOR MVP PRODUCTION USE.\n\n"
-        "Ranks crops for a municipality using the legacy mock predictor and static crop metadata. "
-        "This endpoint returns sample recommendations that do not reflect the production "
-        "LightGBM zoning model or the XGBoost/LightGBM yield ensemble.\n\n"
+        "Ranks crops for a municipality using the production LightGBM zoning model.\n\n"
+        "The backend evaluates every ML-supported crop for the given municipality, scores each one "
+        "by suitability and confidence, and returns the best crop plus alternatives. "
+        "Only municipality_id is required; crop selection is handled server-side.\n\n"
         "Use cases:\n"
         "- Show a best-crop recommendation card.\n"
-        "- Offer alternatives and the next planting season preview.\n\n"
-        "For real zoning predictions, use POST /zoning/predict or POST /zoning/recommendations."
+        "- Offer alternatives and the next planting season preview."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
@@ -61,7 +60,7 @@ def get_recommendations(
     ),
     db: Session = Depends(get_db),
 ):
-    logger.info("[endpoint] POST /recommendations (MOCK) called (municipality_id=%s)", request.municipality_id)
+    logger.info("[endpoint] POST /recommendations called (municipality_id=%s)", request.municipality_id)
 
     logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
@@ -69,13 +68,13 @@ def get_recommendations(
         logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    logger.debug("[endpoint] Querying database for all crops")
-    all_crops = crop_catalog.get_all_crops(db)
-    logger.info("[endpoint] Calling MockPredictor.predict_zoning for %s crops", len(all_crops))
+    logger.debug("[endpoint] Fetching all ML-supported crops")
+    crops = crop_catalog.get_ml_supported_crops(db)
+    logger.info("[endpoint] Calling PredictionService.predict_zoning for %s crops", len(crops))
 
     crop_scores = []
-    for crop in all_crops:
-        prediction = predictor.predict_zoning(
+    for crop in crops:
+        prediction = prediction_service.predict_zoning(
             db=db,
             crop_id=crop.id,
             municipality_id=request.municipality_id,
@@ -95,17 +94,38 @@ def get_recommendations(
 
     top_crop, _, top_prediction = crop_scores[0]
 
-    top_crop_dict = top_crop.model_dump()
-    top_crop_dict["suitability"] = top_prediction["suitability"]
-    top_crop = TopCropResponse(**top_crop_dict)
+    top_crop_dict = {
+        "id": top_crop.id,
+        "name": top_crop.name,
+        "image": top_crop.image or "",
+        "scientific_name": top_crop.scientific_name or "",
+        "success_rate": top_crop.success_rate or 0,
+        "recommendation": top_crop.recommendation or "medium",
+        "short_reason": top_crop.short_reason or "",
+        "reason": top_crop.reason or "",
+        "days_to_harvest": top_crop.days_to_harvest or 0,
+        "soil_type": top_crop.soil_type or "",
+        "ideal_temperature": top_crop.ideal_temperature or "",
+        "humidity": top_crop.humidity or "",
+        "precipitation": top_crop.precipitation or "",
+        "altitude": top_crop.altitude or "",
+        "irrigation": top_crop.irrigation or "",
+        "substrates": top_crop.substrates or [],
+        "planting_months": top_crop.planting_months or [],
+        "harvest_months": top_crop.harvest_months or [],
+        "stages": [GrowthStage(**s) for s in (top_crop.stages or [])],
+        "tips": [Tip(**t) for t in (top_crop.tips or [])],
+        "suitability": top_prediction["suitability"],
+    }
+    top_crop_response = TopCropResponse(**top_crop_dict)
 
     other_crops = [
         CropResponseLite(
             id=crop.id,
             name=crop.name,
-            image=crop.image,
-            recommendation=crop.recommendation,
-            success_rate=crop.success_rate,
+            image=crop.image or "",
+            recommendation=crop.recommendation or "medium",
+            success_rate=crop.success_rate or 0,
         )
         for crop, _, _ in crop_scores[1:5]
     ]
@@ -114,7 +134,7 @@ def get_recommendations(
     next_month = current_month % 12 + 1
 
     plantable_crops = [
-        crop.id for crop in all_crops
+        crop.id for crop in crops
         if next_month in (crop.planting_months or [])
     ]
 
@@ -124,9 +144,9 @@ def get_recommendations(
         crops=plantable_crops[:4],
     )
 
-    logger.info("[endpoint] POST /recommendations (MOCK) returning top_crop=%s", top_crop.id)
+    logger.info("[endpoint] POST /recommendations returning top_crop=%s", top_crop_response.id)
     return RecommendationResponse(
-        top_crop=top_crop,
+        top_crop=top_crop_response,
         other_crops=other_crops,
         next_planting_season=next_planting_season,
     )

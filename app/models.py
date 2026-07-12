@@ -87,6 +87,28 @@ class MunicipalityClimateForecast(Base):
     )
 
 
+class MunicipalityCurrentWeather(Base):
+    __tablename__ = "municipality_current_weather"
+    __table_args__ = (
+        UniqueConstraint("municipality_dane_code", name="uq_current_weather_municipality"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    municipality_dane_code = Column(
+        String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True
+    )
+    temperature = Column(Float, nullable=False)
+    condition = Column(String(100), nullable=False)
+    humidity = Column(Float, nullable=False)
+    precipitation = Column(Float, nullable=False)
+    icon = Column(String(50), nullable=False)
+    source = Column(String(50), nullable=False, default="open-meteo")
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ClimateSyncLog(Base):
     __tablename__ = "climate_sync_logs"
 

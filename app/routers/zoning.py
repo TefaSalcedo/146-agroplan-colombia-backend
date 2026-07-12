@@ -86,14 +86,89 @@ def predict_zoning(
     return ZoningResponse(**result)
 
 
+@router.get(
+    "/recommendations/{municipality_id}",
+    response_model=ZoningBatchResponse,
+    summary="Get zoning recommendations for a municipality",
+    description=(
+        "Evaluates all ML-supported crops for a municipality and returns them ranked.\n\n"
+        "The backend resolves the municipality and runs the LightGBM zoning model (or fallback) "
+        "for every supported crop. No crop_id is required.\n\n"
+        "Each crop indicates whether it used the primary model, a fallback, or was unavailable. "
+        "No crops are filtered by threshold; the frontend decides what to display."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "Municipality ID not found.",
+        },
+    },
+)
+def get_zoning_recommendations_by_municipality(
+    municipality_id: str = Path(..., description="Municipality DANE code (5 digits)"),
+    db: Session = Depends(get_db),
+):
+    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} called (municipality_id=%s)", municipality_id)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", municipality_id)
+    municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
+    if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", municipality_id)
+        raise HTTPException(status_code=404, detail="Municipality not found")
+
+    logger.debug("[endpoint] Fetching all ML-supported crops")
+    ml_crops = crop_catalog.get_ml_supported_crops(db)
+    crop_ids = [c.id for c in ml_crops]
+    logger.debug("[endpoint] Evaluating %s crops", len(crop_ids))
+
+    results = []
+    for crop_id in crop_ids:
+        logger.debug("[endpoint] Evaluating crop_id=%s for municipality_id=%s", crop_id, municipality_id)
+        crop = crop_catalog.get_crop_model_by_id(db, crop_id)
+        if not crop:
+            logger.warning("[endpoint] Crop not found, skipping: %s", crop_id)
+            continue
+
+        prediction = prediction_service.predict_zoning(
+            db=db,
+            crop_id=crop_id,
+            municipality_id=municipality_id,
+        )
+
+        results.append(
+            ZoningBatchCropResult(
+                crop_id=crop_id,
+                crop_name=crop.name,
+                suitability=prediction["suitability"],
+                confidence=prediction["confidence"],
+                model_version=prediction["model_version"],
+                method=prediction.get("method", "primary_model"),
+                factors=prediction["factors"],
+                probabilities=prediction.get("probabilities"),
+                warnings=prediction.get("warnings"),
+            )
+        )
+
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} returning %s ranked crops", len(results))
+
+    return ZoningBatchResponse(
+        municipality_id=municipality_id,
+        municipality_name=municipality.name,
+        results=results,
+        model_version="zoning-lightgbm-v1",
+    )
+
+
 @router.post(
     "/recommendations",
     response_model=ZoningBatchResponse,
-    summary="Get zoning recommendations for all crops",
+    summary="Get zoning recommendations for selected crops",
     description=(
-        "Evaluates all ML-supported crops for a municipality and returns them ranked.\n\n"
-        "Each crop indicates whether it used the primary model, a fallback, or was unavailable. "
-        "No crops are filtered by threshold; the frontend decides what to display."
+        "Evaluates the provided crop list for a municipality and returns them ranked.\n\n"
+        "Use the GET /zoning/recommendations/{municipality_id} endpoint when you want the backend "
+        "to evaluate every supported crop automatically. This POST endpoint is kept for cases where "
+        "the frontend wants to evaluate a custom subset of crops."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
