@@ -160,6 +160,8 @@ class Crop(Base):
     scientific_name = Column(String(200), nullable=True)
     image = Column(String(255), nullable=True)
     days_to_harvest = Column(Integer, nullable=True)
+    establishment_period_days = Column(Integer, nullable=True)
+    is_perennial = Column(Boolean, nullable=False, default=False)
     soil_type = Column(String(255), nullable=True)
     ideal_temperature = Column(String(100), nullable=True)
     humidity = Column(String(100), nullable=True)

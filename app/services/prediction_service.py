@@ -22,6 +22,7 @@ from app.services.crop_catalog import CropCatalog
 from app.services.feature_builder import build_yield_features, build_zoning_features
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
 from app.services.mock_predictor import MockPredictor
+from app.utils.crop_formatting import format_duration_days, simplify_soil_terms
 
 settings = get_settings()
 logger = get_logger("app.services.prediction_service")
@@ -259,6 +260,14 @@ class PredictionService:
     def __init__(self):
         self._mock = MockPredictor()
         self._model_loader = None
+
+    @staticmethod
+    def _format_days(days: Optional[int]) -> str:
+        return format_duration_days(days)
+
+    @staticmethod
+    def _simplify_soil(text: str) -> str:
+        return simplify_soil_terms(text)
 
     def _get_model_loader(self):
         """Lazily get the model loader singleton."""
@@ -1065,10 +1074,15 @@ class PredictionService:
                 "humidity": crop.humidity or "",
                 "altitude": crop.altitude or "",
                 "soil_type": crop.soil_type or "",
+                "soil_type_simple": self._simplify_soil(crop.soil_type or ""),
                 "irrigation": crop.irrigation or "",
                 "planting_months": crop.planting_months or [],
                 "harvest_months": crop.harvest_months or [],
                 "days_to_harvest": crop.days_to_harvest,
+                "days_to_harvest_text": self._format_days(crop.days_to_harvest),
+                "is_perennial": crop.is_perennial or False,
+                "establishment_period_days": crop.establishment_period_days,
+                "establishment_period_text": self._format_days(crop.establishment_period_days),
             },
             "municipality": {
                 "dane_code": municipality.dane_code,

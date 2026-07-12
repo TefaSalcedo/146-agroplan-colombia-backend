@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.logger import get_logger
 from app.models import Crop, CropNationalGuide
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
+from app.utils.crop_formatting import format_duration_days, simplify_soil_terms
 
 logger = get_logger("app.services.crop_national_guide_service")
 
@@ -34,7 +35,12 @@ class CropNationalGuideService:
             "name": crop.name,
             "scientific_name": crop.scientific_name,
             "days_to_harvest": crop.days_to_harvest,
+            "days_to_harvest_text": format_duration_days(crop.days_to_harvest),
+            "establishment_period_days": crop.establishment_period_days,
+            "establishment_period_text": format_duration_days(crop.establishment_period_days),
+            "is_perennial": crop.is_perennial or False,
             "soil_type": crop.soil_type,
+            "soil_type_simple": simplify_soil_terms(crop.soil_type or ""),
             "ideal_temperature": crop.ideal_temperature,
             "humidity": crop.humidity,
             "precipitation": crop.precipitation,
