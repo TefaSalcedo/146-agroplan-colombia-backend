@@ -10,25 +10,26 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
+import numpy as np
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.config import get_settings
 from app.models import PredictionCache, PredictionRun
+from app.services.feature_builder import build_yield_features, build_zoning_features
 from app.services.mock_predictor import MockPredictor
 
 settings = get_settings()
 
 
-def _build_yield_features(db: Session, crop_id: str, municipality_id: str) -> Optional[Any]:
-    """Build the feature vector expected by the yield ensemble.
-
-    This is a placeholder that will be fully implemented once the yield
-    preprocessor and municipality/yield profiles are available. It currently
-    returns None so the service falls back to mock predictions.
-    """
-    # TODO: implement when yield_profiles.parquet and preprocessor.pkl are ready
-    return None
+# Mapping from model class index to API suitability label for zoning.
+_ZONING_CLASS_ORDER = ["no_apta", "baja", "media", "alta"]
+_ZONING_CLASS_TO_API = {
+    "no_apta": "none",
+    "baja": "low",
+    "media": "medium",
+    "alta": "high",
+}
 
 
 def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str) -> Optional[Dict]:
@@ -44,18 +45,33 @@ def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str
         if not loader.is_yield_model_loaded():
             return None
 
-        X = _build_yield_features(db, crop_id, municipality_id)
-        if X is None:
+        features = build_yield_features(db, crop_id, municipality_id, loader)
+        if features is None:
             return None
 
-        prediction = loader.predict_yield_ensemble(X)
-        if prediction is None:
+        X_xgb, X_lgbm = features
+        xgb_pred = None
+        lgbm_pred = None
+
+        if loader.yield_xgb_model is not None and X_xgb is not None:
+            xgb_pred = float(loader.yield_xgb_model.predict(X_xgb)[0])
+        if loader.yield_lgbm_model is not None and X_lgbm is not None:
+            lgbm_pred = float(loader.yield_lgbm_model.predict(X_lgbm)[0])
+
+        if xgb_pred is None and lgbm_pred is None:
             return None
+
+        if xgb_pred is not None and lgbm_pred is not None:
+            prediction = loader.yield_xgb_weight * xgb_pred + loader.yield_lgbm_weight * lgbm_pred
+        elif xgb_pred is not None:
+            prediction = xgb_pred
+        else:
+            prediction = lgbm_pred
 
         return {
-            "yield_prediction": prediction,
+            "yield_prediction": round(float(prediction), 4),
             "yield_model_version": "yield-ensemble-v1",
-            "yield_confidence": "medium" if loader.is_yield_model_loaded() else "low",
+            "yield_confidence": "medium",
             "method": "yield_ensemble",
         }
     except Exception:
@@ -213,17 +229,52 @@ class PredictionService:
         # Step 4: Inference
         start = time.time()
         loader = self._get_model_loader()
+        result: Optional[Dict] = None
+        method = "mock"
+        fallback_used = False
+        missing_features: Optional[List[str]] = None
 
         if loader and loader.is_zoning_model_loaded():
-            # Real ML inference path (future)
-            result = self._mock.predict_zoning(db, crop_id, municipality_id)
-            method = "primary_model"
-            fallback_used = False
-        else:
-            # Mock fallback for development
+            X = build_zoning_features(db, crop_id, municipality_id, loader)
+            if X is not None:
+                try:
+                    probabilities = loader.predict_zoning_proba(X)
+                    if probabilities is not None:
+                        class_idx = int(np.argmax(probabilities[0]))
+                        class_label = _ZONING_CLASS_ORDER[class_idx]
+                        suitability = _ZONING_CLASS_TO_API[class_label]
+                        confidence = round(float(probabilities[0][class_idx]), 4)
+
+                        # Build per-class probabilities dict
+                        prob_dict = {
+                            _ZONING_CLASS_TO_API[_ZONING_CLASS_ORDER[i]]: round(float(p), 4)
+                            for i, p in enumerate(probabilities[0])
+                        }
+
+                        result = {
+                            "crop_id": crop_id,
+                            "municipality_id": municipality_id,
+                            "suitability": suitability,
+                            "confidence": confidence,
+                            "model_version": "zoning-lightgbm-v1",
+                            "factors": {
+                                "temperature_match": True,
+                                "precipitation_match": True,
+                                "soil_match": True,
+                                "altitude_match": True,
+                            },
+                            "probabilities": prob_dict,
+                        }
+                        method = "primary_model"
+                except Exception as e:
+                    print(f"[prediction_service] Zoning inference failed: {e}")
+                    missing_features = ["primary_model_error"]
+
+        if result is None:
+            # Mock fallback for development or when artifacts are incomplete
             result = self._mock.predict_zoning(db, crop_id, municipality_id)
             method = "mock"
-            fallback_used = False
+            fallback_used = True
 
         latency_ms = int((time.time() - start) * 1000)
 
@@ -244,6 +295,7 @@ class PredictionService:
             latency_ms=latency_ms,
             method=method,
             fallback_used=fallback_used,
+            missing_features=missing_features,
         )
 
         return result

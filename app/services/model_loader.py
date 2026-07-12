@@ -21,6 +21,10 @@ from app.config import get_settings
 settings = get_settings()
 
 
+# Ordinal mapping used by the zoning LightGBM model.
+_ZONING_CLASS_ORDER = ["no_apta", "baja", "media", "alta"]
+
+
 def _sha256_file(filepath: str) -> str:
     """Compute SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -114,9 +118,12 @@ def _resolve_yield_files(local_dir: Path) -> List[str]:
 
     # Bundle artifacts (uploaded separately by the data science workflow)
     files.extend([
-        "preprocessor.pkl",
-        "feature_schema.json",
-        "weights.json",
+        "yield/preprocessor.pkl",
+        "yield/feature_schema.json",
+        "yield/weights.json",
+        "yield/manifest.json",
+        # Profiles
+        "models/yield_profiles.parquet",
     ])
     return files
 
@@ -128,10 +135,13 @@ def _resolve_zoning_files(local_dir: Path) -> List[str]:
         "lightgbm_tuned_multi_random_holdout_explainability_report.json",
         "climate_analog_recommender.pkl",
         # Bundle artifacts
-        "preprocessor.pkl",
-        "feature_schema.json",
-        "manifest.json",
-        "golden_vectors.json",
+        "zoning/preprocessor.pkl",
+        "zoning/feature_schema.json",
+        "zoning/manifest.json",
+        "zoning/golden_vectors.json",
+        # Profiles
+        "models/municipality_profiles.parquet",
+        "models/zoning_reference.parquet",
     ]
 
 
@@ -151,6 +161,8 @@ class ModelLoader:
         self.yield_lgbm_weight: float = 0.35
 
         self.knn_fallback = None
+        self.municipality_profiles = None
+        self.yield_profiles = None
 
         self._profiles_loaded = False
         self._golden_vectors_passed: Optional[bool] = None
@@ -237,13 +249,20 @@ class ModelLoader:
     def _load_zoning_model(self, models_dir: Path):
         """Load the zoning LightGBM model and its preprocessor."""
         zoning_path = models_dir / "zoning"
-        model_file = zoning_path / "model.pkl"
+
+        # Support both HF uploaded name and canonical bundle name
+        model_candidates = [
+            models_dir / "zoning" / "lightgbm_tuned_multi_random_holdout.pkl",
+            models_dir / "zoning" / "model.pkl",
+            models_dir / "model.pkl",
+        ]
+        model_file = next((p for p in model_candidates if p.exists()), None)
         preprocessor_file = zoning_path / "preprocessor.pkl"
         schema_file = zoning_path / "feature_schema.json"
         manifest_file = zoning_path / "manifest.json"
 
-        if not model_file.exists():
-            print(f"[model_loader] Zoning model not found at {model_file}")
+        if not model_file:
+            print("[model_loader] Zoning model not found")
             return
 
         # Verify SHA-256 if manifest exists
@@ -268,7 +287,8 @@ class ModelLoader:
         if schema_file.exists():
             with open(schema_file) as f:
                 self.zoning_feature_schema = json.load(f)
-            print(f"[model_loader] Loaded zoning feature schema: {len(self.zoning_feature_schema)} features")
+            n_features = self.zoning_feature_schema.get("n_features", "unknown")
+            print(f"[model_loader] Loaded zoning feature schema: {n_features} features")
 
     def _load_yield_models(self, models_dir: Path):
         """Load the yield XGBoost and LightGBM models and ensemble weights."""
@@ -300,30 +320,54 @@ class ModelLoader:
         if schema_file.exists():
             with open(schema_file) as f:
                 self.yield_feature_schema = json.load(f)
-            print(f"[model_loader] Loaded yield feature schema: {len(self.yield_feature_schema)} features")
+            xgb_n = len(self.yield_feature_schema.get("xgboost", {}).get("feature_names", []))
+            lgbm_n = len(self.yield_feature_schema.get("lightgbm", {}).get("feature_names", []))
+            print(f"[model_loader] Loaded yield feature schema: XGB={xgb_n}, LGBM={lgbm_n} features")
 
         if weights_file.exists():
             with open(weights_file) as f:
                 weights = json.load(f)
-            self.yield_xgb_weight = float(weights.get("xgboost", 0.65))
-            self.yield_lgbm_weight = float(weights.get("lightgbm", 0.35))
+            self.yield_xgb_weight = float(
+                weights.get("weight_xgb") or weights.get("xgboost") or 0.65
+            )
+            self.yield_lgbm_weight = float(
+                weights.get("weight_lgb") or weights.get("lightgbm") or 0.35
+            )
             print(f"[model_loader] Loaded yield ensemble weights: XGB={self.yield_xgb_weight}, LGBM={self.yield_lgbm_weight}")
         else:
             self.yield_xgb_weight = 0.65
             self.yield_lgbm_weight = 0.35
 
     def _load_profiles(self, models_dir: Path):
-        """Load reference Parquet profiles for k-NN fallback."""
-        profiles_file = models_dir / "zoning_reference.parquet"
-        if profiles_file.exists():
-            try:
-                import pandas as pd
+        """Load reference Parquet profiles for k-NN fallback and feature building."""
+        import pandas as pd
 
-                self.knn_fallback = pd.read_parquet(str(profiles_file))
-                self._profiles_loaded = True
+        zoning_reference_file = models_dir / "models" / "zoning_reference.parquet"
+        if zoning_reference_file.exists():
+            try:
+                self.knn_fallback = pd.read_parquet(str(zoning_reference_file))
                 print(f"[model_loader] Loaded zoning reference profiles: {len(self.knn_fallback)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load profiles: {e}")
+                print(f"[model_loader] Could not load zoning reference profiles: {e}")
+
+        municipality_profiles_file = models_dir / "models" / "municipality_profiles.parquet"
+        if municipality_profiles_file.exists():
+            try:
+                self.municipality_profiles = pd.read_parquet(str(municipality_profiles_file))
+                print(f"[model_loader] Loaded municipality profiles: {len(self.municipality_profiles)} rows")
+            except Exception as e:
+                print(f"[model_loader] Could not load municipality profiles: {e}")
+
+        yield_profiles_file = models_dir / "models" / "yield_profiles.parquet"
+        if yield_profiles_file.exists():
+            try:
+                self.yield_profiles = pd.read_parquet(str(yield_profiles_file))
+                print(f"[model_loader] Loaded yield profiles: {len(self.yield_profiles)} rows")
+            except Exception as e:
+                print(f"[model_loader] Could not load yield profiles: {e}")
+
+        if self.knn_fallback is not None or self.municipality_profiles is not None or self.yield_profiles is not None:
+            self._profiles_loaded = True
 
     def _run_golden_vectors(self):
         """Run golden vector validation to verify model integrity."""
@@ -336,16 +380,36 @@ class ModelLoader:
             with open(golden_file) as f:
                 golden = json.load(f)
 
-            # Verify that the model produces expected outputs for known inputs
-            for vector in golden.get("vectors", []):
+            # Support both { "vectors": [...] } and a plain list of vectors
+            vectors = golden.get("vectors") if isinstance(golden, dict) else golden
+            if not vectors:
+                self._golden_vectors_passed = True
+                print("[model_loader] No golden vectors to validate")
+                return
+
+            passed = 0
+            failed = 0
+            for vector in vectors:
                 features = vector.get("features")
                 expected_class = vector.get("expected_class")
-                if features and expected_class is not None:
-                    # This would run actual inference in production
-                    pass
+                if features and expected_class is not None and self.zoning_model is not None:
+                    import pandas as pd
 
-            self._golden_vectors_passed = True
-            print("[model_loader] Golden vector validation passed")
+                    df = pd.DataFrame([features])
+                    schema_names = self.zoning_feature_schema.get("feature_names", [])
+                    if schema_names:
+                        df = df[[c for c in schema_names if c in df.columns]]
+                    pred_idx = int(self.zoning_model.predict(df)[0])
+                    pred_label = _ZONING_CLASS_ORDER[pred_idx]
+                    if pred_label == expected_class:
+                        passed += 1
+                    else:
+                        failed += 1
+
+            self._golden_vectors_passed = failed == 0
+            print(
+                f"[model_loader] Golden vector validation: {passed} passed, {failed} failed"
+            )
         except Exception as e:
             self._golden_vectors_passed = False
             print(f"[model_loader] Golden vector validation failed: {e}")
@@ -421,9 +485,15 @@ class ModelLoader:
         """Return detailed status of all model components."""
         return {
             "zoning_model_loaded": self.is_zoning_model_loaded(),
+            "zoning_preprocessor_loaded": self.zoning_preprocessor is not None,
+            "zoning_schema_loaded": self.zoning_feature_schema is not None,
             "yield_xgb_loaded": self.yield_xgb_model is not None,
             "yield_lgbm_loaded": self.yield_lgbm_model is not None,
+            "yield_preprocessor_loaded": self.yield_preprocessor is not None,
+            "yield_schema_loaded": self.yield_feature_schema is not None,
             "knn_fallback_available": self.is_knn_fallback_available(),
+            "municipality_profiles_loaded": self.municipality_profiles is not None,
+            "yield_profiles_loaded": self.yield_profiles is not None,
             "profiles_loaded": self._profiles_loaded,
             "golden_vectors_passed": self._golden_vectors_passed,
             "load_error": self._load_error,
