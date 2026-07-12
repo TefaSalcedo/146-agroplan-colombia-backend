@@ -650,6 +650,7 @@ class LLMService:
             "municipio. Como base de inspiración usa la lista 'alternative_crops_from_ecocrop_fao' "
             "que ya filtré por clima, altura y lluvia del municipio. Puedes incluir cultivos de "
             "esa lista y complementar con tu conocimiento agronómico cuando sea necesario. "
+            "Devuelve entre 3 y 7 cultivos alternativos; nunca más de 7. "
             "Explica de forma concreta y diferente para cada uno por qué puede funcionar allí: "
             "menciona si le gusta el frío, el calor, la lluvia, la altura, la tierra o el tiempo de cosecha. "
             "No repitas la misma frase para todos los cultivos.\n"
