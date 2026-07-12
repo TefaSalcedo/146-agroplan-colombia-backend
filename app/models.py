@@ -302,6 +302,31 @@ class MunicipalityAIGuide(Base):
 
 
 # ---------------------------------------------------------------------------
+# Municipality climate enrichment (Open-Meteo fallback)
+# ---------------------------------------------------------------------------
+class MunicipalityClimateEnrichment(Base):
+    __tablename__ = "municipality_climate_enrichment"
+    __table_args__ = (
+        UniqueConstraint("municipality_dane_code", name="uq_municipality_climate_enrichment"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    municipality_dane_code = Column(
+        String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True
+    )
+    altitude = Column(Integer, nullable=True)
+    avg_temperature = Column(Float, nullable=True)
+    precipitation = Column(Float, nullable=True)
+    source = Column(String(50), nullable=False, default="open-meteo")
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
 # LLM generation audit
 # ---------------------------------------------------------------------------
 

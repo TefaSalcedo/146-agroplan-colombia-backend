@@ -1,5 +1,7 @@
 import httpx
 from datetime import datetime, date, timezone
+from typing import Optional
+
 from app.config import get_settings
 from app.logger import get_logger
 
@@ -257,5 +259,72 @@ class OpenMeteoService:
                 "source": "open-meteo-seasonal",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             })
-
         return records
+
+    def get_elevation(self, lat: float, lng: float) -> Optional[float]:
+        """Get elevation from Open-Meteo elevation API."""
+        url = f"{self.base_url}/v1/elevation"
+        params = {"latitude": lat, "longitude": lng}
+        try:
+            logger.debug("[get_elevation] Calling Open-Meteo (lat=%s, lng=%s)", lat, lng)
+            with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+                response = client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                elevation = data.get("elevation")
+                if isinstance(elevation, list) and elevation:
+                    elevation = elevation[0]
+                if elevation is not None:
+                    return float(elevation)
+        except Exception as e:
+            logger.warning("[get_elevation] Failed: %s", e)
+        return None
+
+    def get_annual_climate(self, lat: float, lng: float) -> Optional[dict]:
+        """Get annual average temperature and precipitation from Open-Meteo archive.
+
+        Uses the last 10 years of historical data to compute long-term averages.
+        """
+        end_year = datetime.now(timezone.utc).year - 1
+        start_year = end_year - 9
+        url = f"{self.archive_url}/v1/archive"
+        params = {
+            "latitude": lat,
+            "longitude": lng,
+            "start_date": f"{start_year}-01-01",
+            "end_date": f"{end_year}-12-31",
+            "daily": "temperature_2m_mean,precipitation_sum",
+            "timezone": "America/Bogota",
+        }
+        try:
+            logger.debug(
+                "[get_annual_climate] Calling Open-Meteo Archive (lat=%s, lng=%s, %s-%s)",
+                lat, lng, start_year, end_year,
+            )
+            with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+                response = client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as e:
+            logger.warning("[get_annual_climate] Failed: %s", e)
+            return None
+
+        daily = data.get("daily", {})
+        temps = daily.get("temperature_2m_mean", [])
+        precips = daily.get("precipitation_sum", [])
+
+        valid_temps = [t for t in temps if t is not None]
+        valid_precips = [p for p in precips if p is not None]
+
+        if not valid_temps or not valid_precips:
+            return None
+
+        avg_temp = round(sum(valid_temps) / len(valid_temps), 1)
+        annual_precip = round(sum(valid_precips) / len(valid_precips) * 365, 1)
+
+        return {
+            "avg_temperature": avg_temp,
+            "precipitation": annual_precip,
+            "years": [start_year, end_year],
+            "source": "open-meteo-archive",
+        }

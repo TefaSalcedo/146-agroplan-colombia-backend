@@ -7,8 +7,10 @@ generated and persisted.
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -22,11 +24,21 @@ from app.models import (
 from app.logger import get_logger
 from app.services.crop_catalog import CropCatalog
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
+from app.services.municipality_climate_enrichment_service import (
+    get_municipality_climate_enrichment_service,
+)
 
 logger = get_logger("app.services.municipality_ai_guide_service")
 
-GUIDE_VERSION = "1.0"
+GUIDE_VERSION = "2.0"
 GUIDE_TTL_DAYS = 90
+
+# Candidate locations for the integrated crop-features dataset.
+_CROP_FEATURES_PATHS = [
+    Path("models/yield/data/crop_features_integrated.csv"),
+    Path("data/crop_features_integrated.csv"),
+    Path("/app/models/yield/data/crop_features_integrated.csv"),
+]
 
 
 class MunicipalityAIGuideService:
@@ -35,6 +47,117 @@ class MunicipalityAIGuideService:
     def __init__(self):
         self.llm_service = get_llm_service()
         self.crop_catalog = CropCatalog()
+        self.enrichment_service = get_municipality_climate_enrichment_service()
+        self._crop_features: Optional[pd.DataFrame] = None
+
+    def _load_crop_features(self) -> Optional[pd.DataFrame]:
+        """Load the integrated crop-features dataset once."""
+        if self._crop_features is not None:
+            return self._crop_features
+
+        for path in _CROP_FEATURES_PATHS:
+            if path.exists():
+                try:
+                    self._crop_features = pd.read_csv(str(path))
+                    logger.info(
+                        "[load_crop_features] Loaded crop features from %s (%s rows)",
+                        path,
+                        len(self._crop_features),
+                    )
+                    return self._crop_features
+                except Exception as e:
+                    logger.warning("[load_crop_features] Could not load %s: %s", path, e)
+
+        logger.warning("[load_crop_features] No crop-features dataset found")
+        return None
+
+    def _filter_compatible_crops(
+        self,
+        df: pd.DataFrame,
+        altitude: Optional[float],
+        avg_temperature: Optional[float],
+        precipitation: Optional[float],
+        exclude_names: List[str],
+        top_n: int = 15,
+    ) -> List[Dict[str, Any]]:
+        """Return crops from EcoCrop/FAO that match the municipality climate.
+
+        Filters by temperature, precipitation and altitude ranges when available.
+        Excludes crops already present in the AgroPlan catalog. Returns the best
+        matches up to ``top_n`` rows.
+        """
+        if df is None or df.empty:
+            return []
+
+        # Work on a copy and keep only rows with a name.
+        rows = df[df["cultivo_eva"].notna()].copy()
+
+        def _to_float(value):
+            try:
+                if value is None or (isinstance(value, float) and pd.isna(value)):
+                    return None
+                return float(value)
+            except (ValueError, TypeError):
+                return None
+
+        # Temperature filter.
+        if avg_temperature is not None:
+            rows["temp_min"] = rows["temp_opt_min"].apply(_to_float)
+            rows["temp_max"] = rows["temp_opt_max"].apply(_to_float)
+            mask = (
+                (rows["temp_min"].isna()) | (rows["temp_min"] <= avg_temperature)
+            ) & (
+                (rows["temp_max"].isna()) | (rows["temp_max"] >= avg_temperature)
+            )
+            rows = rows[mask].copy()
+
+        # Precipitation filter.
+        if precipitation is not None:
+            rows["rain_min"] = rows["rain_opt_min"].apply(_to_float)
+            rows["rain_max"] = rows["rain_opt_max"].apply(_to_float)
+            mask = (
+                (rows["rain_min"].isna()) | (rows["rain_min"] <= precipitation)
+            ) & (
+                (rows["rain_max"].isna()) | (rows["rain_max"] >= precipitation)
+            )
+            rows = rows[mask].copy()
+
+        # Altitude filter (alt_max is the maximum altitude the crop tolerates).
+        if altitude is not None:
+            rows["alt_max"] = rows["alt_max"].apply(_to_float)
+            mask = (rows["alt_max"].isna()) | (rows["alt_max"] >= altitude)
+            rows = rows[mask].copy()
+
+        # Exclude crops already in the AgroPlan catalog.
+        exclude_normalized = {name.lower().strip() for name in exclude_names if name}
+        rows = rows[~rows["cultivo_eva"].str.lower().isin(exclude_normalized)].copy()
+
+        if rows.empty:
+            return []
+
+        # Prefer rows with full EcoCrop data, then sort by name for stability.
+        rows["has_ecocrop"] = rows["has_ecocrop"].fillna(False)
+        rows = rows.sort_values(
+            by=["has_ecocrop", "ecocrop_match_score", "cultivo_eva"],
+            ascending=[False, False, True],
+        )
+
+        selected = rows.head(top_n)
+        result = []
+        for _, row in selected.iterrows():
+            result.append({
+                "crop_name": str(row.get("cultivo_eva", "")).strip(),
+                "scientific_name": str(row.get("ecocrop_scientific_name", "")).strip() or None,
+                "category": str(row.get("ecocrop_category", "")).strip() or None,
+                "cycle_days_min": _to_float(row.get("gmin_dias")),
+                "cycle_days_max": _to_float(row.get("gmax_dias")),
+                "temp_optimal_range": str(row.get("temp_optimal_range", "")).strip() or None,
+                "rain_optimal_range": str(row.get("rain_optimal_range", "")).strip() or None,
+                "altitude_max": _to_float(row.get("alt_max")),
+                "sowing_months": str(row.get("fao_sowing_months", "")).strip() or None,
+            })
+
+        return result
 
     def _get_current_weather(self, db: Session, municipality_id: str) -> Optional[Dict[str, Any]]:
         """Return current weather for the municipality if available."""
@@ -97,10 +220,22 @@ class MunicipalityAIGuideService:
         municipality: Municipality,
     ) -> Dict[str, Any]:
         """Build the context object sent to the LLM."""
+        effective = self.enrichment_service.get_effective_values(db, municipality)
+
         ml_crops = self.crop_catalog.get_ml_supported_crops(db)
         catalog_crop_names = [c.name for c in ml_crops]
         all_crops = db.query(Crop).order_by(Crop.name).all()
         all_crop_names = [c.name for c in all_crops]
+
+        df = self._load_crop_features()
+        alternative_crops = self._filter_compatible_crops(
+            df,
+            altitude=effective.get("altitude"),
+            avg_temperature=effective.get("avg_temperature"),
+            precipitation=effective.get("precipitation"),
+            exclude_names=all_crop_names,
+            top_n=15,
+        )
 
         return {
             "municipality_id": municipality.dane_code,
@@ -108,14 +243,15 @@ class MunicipalityAIGuideService:
             "department_name": municipality.department or "",
             "latitude": municipality.lat,
             "longitude": municipality.lng,
-            "altitude_meters": municipality.altitude,
-            "avg_temperature_c": municipality.avg_temperature,
-            "annual_precipitation_mm": municipality.precipitation,
+            "altitude_meters": effective.get("altitude"),
+            "avg_temperature_c": effective.get("avg_temperature"),
+            "annual_precipitation_mm": effective.get("precipitation"),
+            "climate_source": effective.get("source"),
             "current_weather": self._get_current_weather(db, municipality.dane_code),
             "daily_forecast_summary": self._get_daily_forecast_summary(db, municipality.dane_code),
             "monthly_forecast": self._get_monthly_forecast_summary(db, municipality.dane_code),
             "catalog_crop_names": catalog_crop_names,
-            "all_crop_names_in_database": all_crop_names,
+            "alternative_crops_from_ecocrop_fao": alternative_crops,
         }
 
     def get_or_generate(
