@@ -7,6 +7,7 @@ returns the fresh value. This makes every request act as an incremental sync.
 
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -22,6 +23,8 @@ from app.services.open_meteo import OpenMeteoService
 
 logger = get_logger("app.services.climate_data_service")
 
+BOGOTA_TZ = ZoneInfo("America/Bogota")
+
 
 class ClimateDataService:
     """Read-through cache for municipality climate data."""
@@ -30,7 +33,7 @@ class ClimateDataService:
         self.open_meteo = open_meteo_service or OpenMeteoService()
 
     def _today(self) -> date:
-        return datetime.now(timezone.utc).date()
+        return datetime.now(BOGOTA_TZ).date()
 
     def get_forecast_records(
         self,
@@ -38,11 +41,11 @@ class ClimateDataService:
         municipality: Municipality,
         days: int,
     ) -> List[MunicipalityClimateForecast]:
-        """Return forecast records for the next ``days`` days, fetching missing days from Open-Meteo.
+        """Return forecast records from today through today + ``days`` (inclusive).
 
-        The method is forgiving: it returns whatever is already stored plus any
-        newly fetched records. If Open-Meteo fails, it returns the stored data
-        without raising so that endpoints remain available.
+        Dates are interpreted in the America/Bogota timezone so that "today"
+        matches the user's local date. If Open-Meteo fails, the stored data is
+        returned without raising so endpoints remain available.
         """
         today = self._today()
         end_date = today + timedelta(days=days)
@@ -62,7 +65,7 @@ class ClimateDataService:
             .all()
         )
         stored_dates = {record.forecast_date for record in stored}
-        requested_dates = {today + timedelta(days=i) for i in range(days)}
+        requested_dates = {today + timedelta(days=i) for i in range(days + 1)}
         missing_dates = sorted(requested_dates - stored_dates)
 
         logger.debug(
@@ -81,7 +84,8 @@ class ClimateDataService:
                 fetched = self.open_meteo.get_daily_forecast(
                     lat=municipality.lat,
                     lng=municipality.lng,
-                    days=days,
+                    start_date=today,
+                    end_date=end_date,
                 )
                 if fetched:
                     self._upsert_forecast_records(db, municipality.dane_code, fetched)
@@ -262,8 +266,9 @@ class ClimateDataService:
         in a single Open-Meteo call and persisted.
         """
         today = self._today()
+        current_month = today.replace(day=1)
         requested_months = []
-        cursor = today.replace(day=1)
+        cursor = current_month
         for _ in range(months):
             requested_months.append(cursor)
             if cursor.month == 12:
@@ -289,7 +294,7 @@ class ClimateDataService:
 
         # Determine which months are missing or stale.
         ttl = timedelta(days=max_age_days)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(BOGOTA_TZ)
         valid_by_month = {}
         for record in stored:
             if record.fetched_at and (now - record.fetched_at) <= ttl:
@@ -317,6 +322,9 @@ class ClimateDataService:
                     lng=municipality.lng,
                     months=months + 1,
                 )
+                # Drop any months before the current month; the API may return the
+                # trailing part of the previous month depending on the forecast horizon.
+                fetched = [r for r in fetched if r.get("forecast_month") and r["forecast_month"] >= current_month]
                 if fetched:
                     self._upsert_monthly_forecast_records(db, municipality.dane_code, fetched)
                     logger.info(

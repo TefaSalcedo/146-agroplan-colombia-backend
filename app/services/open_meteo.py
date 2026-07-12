@@ -132,27 +132,43 @@ class OpenMeteoService:
         self,
         lat: float,
         lng: float,
-        days: int = 90
+        days: int | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[dict]:
         """Get daily forecast from Open-Meteo Forecast API.
 
         Returns a list of daily records with temperature, precipitation, humidity,
-        UV index and wind speed. One Open-Meteo call covers all requested days.
+        UV index and wind speed. Either ``days`` or both ``start_date`` and
+        ``end_date`` must be provided. When ``start_date``/``end_date`` are given,
+        the API is constrained to that exact interval, which avoids returning
+        dates before today in non-UTC timezones.
         """
         url = f"{self.base_url}/v1/forecast"
         daily_vars = (
             "temperature_2m_min,temperature_2m_max,temperature_2m_mean,"
             "precipitation_sum,relative_humidity_2m_mean,uv_index_max,wind_speed_10m_max"
         )
-        params = {
+        params: dict[str, str | int | float] = {
             "latitude": lat,
             "longitude": lng,
             "daily": daily_vars,
-            "forecast_days": days,
-            "timezone": "America/Bogota"
+            "timezone": "America/Bogota",
         }
 
-        logger.debug("[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
+        if start_date and end_date:
+            params["start_date"] = start_date.isoformat()
+            params["end_date"] = end_date.isoformat()
+            logger.debug(
+                "[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, %s to %s)",
+                lat, lng, start_date, end_date,
+            )
+        elif days is not None:
+            params["forecast_days"] = days
+            logger.debug("[get_daily_forecast] Calling Open-Meteo Forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
+        else:
+            raise ValueError("Either days or both start_date and end_date must be provided")
+
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             response = client.get(url, params=params)
             response.raise_for_status()
