@@ -1,240 +1,71 @@
 from typing import List, Optional
+
+from sqlalchemy.orm import Session
+
+from app.models import Crop
 from app.schemas.crop import CropResponse, CropResponseLite, GrowthStage, Tip
 
 
 class CropCatalog:
-    def __init__(self):
-        # Mock data based on frontend mock-data.ts
-        self._crops_db = {
-            "cafe": {
-                "id": "cafe",
-                "name": "Café",
-                "scientific_name": "Coffea arabica",
-                "image": "/crops/cafe.png",
-                "success_rate": 92,
-                "recommendation": "high",
-                "short_reason": "Clima y altitud ideales en tu zona.",
-                "reason": "Tu municipio tiene la altitud, la temperatura templada y las lluvias que el café necesita para crecer sano. El suelo de la región es fértil y bien drenado, condiciones perfectas para una buena cosecha.",
-                "days_to_harvest": 270,
-                "soil_type": "Franco, fértil y bien drenado",
-                "ideal_temperature": "18 – 24 °C",
-                "humidity": "70 – 80 %",
-                "precipitation": "1.500 – 2.500 mm / año",
-                "altitude": "1.200 – 2.000 msnm",
-                "irrigation": "Moderado, mantener humedad constante",
-                "substrates": ["Materia orgánica", "Compost", "Cascarilla de arroz"],
-                "planting_months": [2, 3, 9, 10],
-                "harvest_months": [4, 5, 10, 11],
-                "stages": [
-                    {"label": "Siembra", "icon": "seed", "description": "Se planta la semilla en almácigo."},
-                    {"label": "Germinación", "icon": "sprout", "description": "Aparecen los primeros brotes."},
-                    {"label": "Crecimiento", "icon": "leaf", "description": "La planta desarrolla ramas y hojas."},
-                    {"label": "Floración", "icon": "flower", "description": "Aparecen las flores blancas."},
-                    {"label": "Cosecha", "icon": "harvest", "description": "Se recogen los granos maduros."},
-                ],
-                "tips": [
-                    {"title": "Sombra parcial", "description": "El café crece mejor con algo de sombra que lo proteja del sol fuerte."},
-                    {"title": "Control de broca", "description": "Revisa los granos con frecuencia para evitar la broca del café."},
-                    {"title": "Abono orgánico", "description": "Aplica compost cada 3 meses para mantener el suelo fértil."},
-                ],
-            },
-            "maiz": {
-                "id": "maiz",
-                "name": "Maíz",
-                "scientific_name": "Zea mays",
-                "image": "/crops/maiz.png",
-                "success_rate": 85,
-                "recommendation": "high",
-                "short_reason": "Buena temporada de lluvias para sembrar.",
-                "reason": "El maíz se adapta muy bien a tu región. La temporada de lluvias que viene favorece la germinación y el suelo tiene los nutrientes necesarios para un buen desarrollo de la planta.",
-                "days_to_harvest": 120,
-                "soil_type": "Franco arcilloso, con buena materia orgánica",
-                "ideal_temperature": "20 – 30 °C",
-                "humidity": "60 – 70 %",
-                "precipitation": "600 – 1.200 mm / ciclo",
-                "altitude": "0 – 2.800 msnm",
-                "irrigation": "Riego regular en épocas secas",
-                "substrates": ["Compost", "Estiércol curado", "Humus de lombriz"],
-                "planting_months": [3, 4, 8, 9],
-                "harvest_months": [7, 8, 11, 12],
-                "stages": [
-                    {"label": "Siembra", "icon": "seed", "description": "Se depositan las semillas en el surco."},
-                    {"label": "Germinación", "icon": "sprout", "description": "Brotan las primeras plántulas."},
-                    {"label": "Crecimiento", "icon": "leaf", "description": "El tallo crece y salen las hojas."},
-                    {"label": "Floración", "icon": "flower", "description": "Aparece la espiga y los pelos."},
-                    {"label": "Cosecha", "icon": "harvest", "description": "Las mazorcas están listas."},
-                ],
-                "tips": [
-                    {"title": "Distancia entre plantas", "description": "Deja 25 cm entre plantas para que crezcan sin competir."},
-                    {"title": "Riego en floración", "description": "No dejes que le falte agua durante la floración."},
-                    {"title": "Rotación de cultivos", "description": "Alterna con fríjol para mejorar el suelo."},
-                ],
-            },
-            "frijol": {
-                "id": "frijol",
-                "name": "Fríjol",
-                "scientific_name": "Phaseolus vulgaris",
-                "image": "/crops/frijol.png",
-                "success_rate": 78,
-                "recommendation": "medium",
-                "short_reason": "Recomendado, vigila la humedad del suelo.",
-                "reason": "El fríjol es una buena opción para tu zona y además mejora la fertilidad del suelo. Ten en cuenta que necesita un buen drenaje para evitar enfermedades por exceso de humedad.",
-                "days_to_harvest": 90,
-                "soil_type": "Franco, suelto y bien drenado",
-                "ideal_temperature": "15 – 27 °C",
-                "humidity": "65 – 75 %",
-                "precipitation": "300 – 600 mm / ciclo",
-                "altitude": "1.000 – 2.400 msnm",
-                "irrigation": "Moderado, evitar encharcamientos",
-                "substrates": ["Humus de lombriz", "Compost", "Ceniza vegetal"],
-                "planting_months": [1, 2, 8, 9],
-                "harvest_months": [4, 5, 11, 12],
-                "stages": [
-                    {"label": "Siembra", "icon": "seed", "description": "Se siembra la semilla directamente."},
-                    {"label": "Germinación", "icon": "sprout", "description": "Salen los cotiledones."},
-                    {"label": "Crecimiento", "icon": "leaf", "description": "La planta se enreda y crece."},
-                    {"label": "Floración", "icon": "flower", "description": "Aparecen flores y vainas."},
-                    {"label": "Cosecha", "icon": "harvest", "description": "Se recogen las vainas secas."},
-                ],
-                "tips": [
-                    {"title": "Buen drenaje", "description": "Evita el encharcamiento para prevenir hongos en la raíz."},
-                    {"title": "Tutorado", "description": "Si es fríjol de enredadera, usa varas para sostenerlo."},
-                    {"title": "Cosecha a tiempo", "description": "Recoge las vainas cuando estén secas pero antes de que se abran."},
-                ],
-            },
-            # Extra crops (lite version)
-            "tomate": {
-                "id": "tomate",
-                "name": "Tomate",
-                "scientific_name": "Solanum lycopersicum",
-                "image": "/crops/tomate.png",
-                "success_rate": 74,
-                "recommendation": "medium",
-                "short_reason": "Adecuado para zonas templadas.",
-                "reason": "El tomate se adapta bien a temperaturas moderadas. Requiere buen manejo de plagas y riego constante.",
-                "days_to_harvest": 90,
-                "soil_type": "Franco, rico en materia orgánica",
-                "ideal_temperature": "18 – 25 °C",
-                "humidity": "60 – 70 %",
-                "precipitation": "400 – 800 mm / ciclo",
-                "altitude": "0 – 2.000 msnm",
-                "irrigation": "Frecuente, sin encharcar",
-                "substrates": ["Compost", "Humus", "Cascarilla"],
-                "planting_months": [2, 3, 8, 9],
-                "harvest_months": [5, 6, 11, 12],
-                "stages": [],
-                "tips": [],
-            },
-            "aguacate": {
-                "id": "aguacate",
-                "name": "Aguacate",
-                "scientific_name": "Persea americana",
-                "image": "/crops/aguacate.png",
-                "success_rate": 88,
-                "recommendation": "high",
-                "short_reason": "Excelente adaptación al clima local.",
-                "reason": "El aguacate se desarrolla muy bien en altitudes medias con temperaturas moderadas. Requiere suelo bien drenado.",
-                "days_to_harvest": 365,
-                "soil_type": "Franco arenoso, profundo y bien drenado",
-                "ideal_temperature": "16 – 24 °C",
-                "humidity": "70 – 80 %",
-                "precipitation": "1.200 – 2.000 mm / año",
-                "altitude": "1.500 – 2.500 msnm",
-                "irrigation": "Moderado a alto",
-                "substrates": ["Compost", "Materia orgánica", "Estiércol"],
-                "planting_months": [3, 4, 9, 10],
-                "harvest_months": [6, 7, 12, 1],
-                "stages": [],
-                "tips": [],
-            },
-            "platano": {
-                "id": "platano",
-                "name": "Plátano",
-                "scientific_name": "Musa paradisiaca",
-                "image": "/crops/platano.png",
-                "success_rate": 69,
-                "recommendation": "medium",
-                "short_reason": "Requiere alta humedad.",
-                "reason": "El plátano necesita alta humedad y temperaturas cálidas constantes para un buen desarrollo.",
-                "days_to_harvest": 300,
-                "soil_type": "Franco, rico en materia orgánica",
-                "ideal_temperature": "25 – 30 °C",
-                "humidity": "80 – 90 %",
-                "precipitation": "2.000 – 2.500 mm / año",
-                "altitude": "0 – 1.500 msnm",
-                "irrigation": "Abundante",
-                "substrates": ["Compost", "Estiércol", "Hojarasca"],
-                "planting_months": [1, 2, 6, 7],
-                "harvest_months": [10, 11, 12, 1],
-                "stages": [],
-                "tips": [],
-            },
-            "papa": {
-                "id": "papa",
-                "name": "Papa",
-                "scientific_name": "Solanum tuberosum",
-                "image": "/crops/papa.png",
-                "success_rate": 83,
-                "recommendation": "high",
-                "short_reason": "Ideal para altitudes altas.",
-                "reason": "La papa crece mejor en altitudes altas con temperaturas frescas. El clima local es muy adecuado.",
-                "days_to_harvest": 120,
-                "soil_type": "Franco arenoso, suelto",
-                "ideal_temperature": "14 – 18 °C",
-                "humidity": "70 – 80 %",
-                "precipitation": "500 – 800 mm / ciclo",
-                "altitude": "2.000 – 3.200 msnm",
-                "irrigation": "Moderado",
-                "substrates": ["Compost", "Arena", "Turba"],
-                "planting_months": [3, 4, 9, 10],
-                "harvest_months": [7, 8, 1, 2],
-                "stages": [],
-                "tips": [],
-            },
-            "cacao": {
-                "id": "cacao",
-                "name": "Cacao",
-                "scientific_name": "Theobroma cacao",
-                "image": "/crops/cacao.png",
-                "success_rate": 41,
-                "recommendation": "low",
-                "short_reason": "Requiere condiciones muy específicas.",
-                "reason": "El cacao necesita alta humedad constante y temperaturas cálidas. Las condiciones locales no son óptimas.",
-                "days_to_harvest": 180,
-                "soil_type": "Franco arcilloso, rico en materia orgánica",
-                "ideal_temperature": "24 – 28 °C",
-                "humidity": "80 – 90 %",
-                "precipitation": "1.500 – 2.500 mm / año",
-                "altitude": "0 – 800 msnm",
-                "irrigation": "Alto",
-                "substrates": ["Compost", "Estiércol", "Hojarasca"],
-                "planting_months": [5, 6, 11, 12],
-                "harvest_months": [10, 11, 4, 5],
-                "stages": [],
-                "tips": [],
-            },
-        }
-    
-    def get_all_crops(self) -> List[CropResponse]:
-        """Get all crops with full details"""
-        return [CropResponse(**crop) for crop in self._crops_db.values()]
-    
-    def get_crop_by_id(self, crop_id: str) -> Optional[CropResponse]:
-        """Get a crop by ID"""
-        crop = self._crops_db.get(crop_id)
-        if crop:
-            return CropResponse(**crop)
-        return None
-    
-    def get_crops_lite(self) -> List[CropResponseLite]:
-        """Get all crops with lite version for lists"""
-        return [
-            CropResponseLite(
-                id=crop["id"],
-                name=crop["name"],
-                image=crop["image"],
-                recommendation=crop["recommendation"],
-                success_rate=crop["success_rate"],
-            )
-            for crop in self._crops_db.values()
-        ]
+    """Crop catalog backed by the database.
+
+    Only the 7 ML-supported crops are stored. Agronomic fields come from
+    traced data sources; no mock text is silently reused.
+    """
+
+    def _to_response(self, crop: Crop) -> CropResponse:
+        stages = [GrowthStage(**s) for s in (crop.stages or [])]
+        tips = [Tip(**t) for t in (crop.tips or [])]
+        return CropResponse(
+            id=crop.id,
+            name=crop.name,
+            scientific_name=crop.scientific_name or "",
+            image=crop.image or "",
+            success_rate=crop.success_rate or 0,
+            recommendation=crop.recommendation or "medium",
+            short_reason=crop.short_reason or "",
+            reason=crop.reason or "",
+            days_to_harvest=crop.days_to_harvest or 0,
+            soil_type=crop.soil_type or "",
+            ideal_temperature=crop.ideal_temperature or "",
+            humidity=crop.humidity or "",
+            precipitation=crop.precipitation or "",
+            altitude=crop.altitude or "",
+            irrigation=crop.irrigation or "",
+            substrates=crop.substrates or [],
+            planting_months=crop.planting_months or [],
+            harvest_months=crop.harvest_months or [],
+            stages=stages,
+            tips=tips,
+        )
+
+    def _to_lite(self, crop: Crop) -> CropResponseLite:
+        return CropResponseLite(
+            id=crop.id,
+            name=crop.name,
+            image=crop.image or "",
+            recommendation=crop.recommendation or "medium",
+            success_rate=crop.success_rate or 0,
+        )
+
+    def get_all_crops(self, db: Session) -> List[CropResponse]:
+        crops = db.query(Crop).order_by(Crop.name).all()
+        return [self._to_response(c) for c in crops]
+
+    def get_crops_lite(self, db: Session) -> List[CropResponseLite]:
+        crops = db.query(Crop).order_by(Crop.name).all()
+        return [self._to_lite(c) for c in crops]
+
+    def get_crop_by_id(self, db: Session, crop_id: str) -> Optional[CropResponse]:
+        crop = db.query(Crop).filter(Crop.id == crop_id).first()
+        if not crop:
+            return None
+        return self._to_response(crop)
+
+    def get_crop_model_by_id(self, db: Session, crop_id: str) -> Optional[Crop]:
+        """Return the raw ORM model for internal use."""
+        return db.query(Crop).filter(Crop.id == crop_id).first()
+
+    def get_ml_supported_crops(self, db: Session) -> List[Crop]:
+        """Return only crops that have ML models trained."""
+        return db.query(Crop).filter(Crop.is_ml_supported == True).order_by(Crop.name).all()
