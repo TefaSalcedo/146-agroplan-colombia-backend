@@ -313,7 +313,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            explanation = result.get("content", "").strip()
+            explanation = (result.get("content") or "").strip()
             logger.info("[generate_explanation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             if explanation:
@@ -430,7 +430,14 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            text = result.get("content", "").strip()
+            text = (result.get("content") or "").strip()
+            if not text:
+                logger.warning(
+                    "[generate_crop_recommendation] Provider %s/%s returned empty content",
+                    provider["provider"],
+                    model,
+                )
+                continue
             logger.info("[generate_crop_recommendation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             return {
