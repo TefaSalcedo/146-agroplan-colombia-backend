@@ -49,6 +49,9 @@ class MunicipalitySearchResult(BaseModel):
     """Single result for municipality/department autocomplete."""
 
     id: str = Field(description="DANE code (municipality 5 digits or department 2 digits)")
+    municipality_id: Optional[str] = Field(
+        default=None, description="Municipality DANE code (same as id when type is municipality)"
+    )
     name: str = Field(description="Display name")
     type: Literal["municipality", "department"] = Field(description="Entity type")
     department_id: Optional[str] = Field(default=None, description="Department DANE code when type is municipality")

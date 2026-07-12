@@ -28,11 +28,13 @@ prediction_service = PredictionService()
 @router.post(
     "/predict",
     response_model=CalendarResponse,
-    summary="Predict planting calendar (legacy single-month)",
+    summary="[MOCK] Predict planting calendar legacy single-month (not for MVP)",
     description=(
-        "Builds day-level planting ratings for a specific crop and municipality month.\n\n"
+        "⚠️ MOCK ENDPOINT — NOT INTENDED FOR MVP PRODUCTION USE.\n\n"
+        "Builds day-level planting ratings using static crop calendar data instead of the "
+        "production yield ensemble and climate signals.\n\n"
         "This endpoint is preserved for backwards compatibility. "
-        "For multi-crop, multi-month predictions use /calendars/predict-batch instead."
+        "For real multi-crop, multi-month predictions use /calendars/predict-batch."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {

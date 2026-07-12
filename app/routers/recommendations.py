@@ -29,12 +29,16 @@ MONTHS_LONG = [
 @router.post(
     "",
     response_model=RecommendationResponse,
-    summary="Get crop recommendations",
+    summary="[MOCK] Get crop recommendations (not for MVP)",
     description=(
-        "Ranks crops for a municipality using zoning suitability and confidence scores.\n\n"
+        "⚠️ MOCK ENDPOINT — NOT INTENDED FOR MVP PRODUCTION USE.\n\n"
+        "Ranks crops for a municipality using the legacy mock predictor and static crop metadata. "
+        "This endpoint returns sample recommendations that do not reflect the production "
+        "LightGBM zoning model or the XGBoost/LightGBM yield ensemble.\n\n"
         "Use cases:\n"
         "- Show a best-crop recommendation card.\n"
-        "- Offer alternatives and the next planting season preview."
+        "- Offer alternatives and the next planting season preview.\n\n"
+        "For real zoning predictions, use POST /zoning/predict or POST /zoning/recommendations."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {

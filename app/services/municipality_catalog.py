@@ -92,6 +92,7 @@ class MunicipalityCatalog:
         for dept in departments:
             results.append({
                 "id": dept.dane_code,
+                "municipality_id": None,
                 "name": dept.name,
                 "type": "department",
                 "department_id": None,
@@ -101,6 +102,7 @@ class MunicipalityCatalog:
         for muni, dept in municipalities:
             results.append({
                 "id": muni.dane_code,
+                "municipality_id": muni.dane_code,
                 "name": muni.name,
                 "type": "municipality",
                 "department_id": dept.dane_code,

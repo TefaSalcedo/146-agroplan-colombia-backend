@@ -219,12 +219,15 @@ def get_zoning_map(
 @router.post(
     "/mock/predict/batch",
     response_model=ZoningMockBatchResponse,
-    summary="Predict zoning suitability for all municipalities (mock)",
+    summary="[MOCK] Predict zoning suitability for all municipalities (not for MVP)",
     description=(
-        "Legacy mock endpoint: returns crop suitability predictions for every municipality.\n\n"
+        "⚠️ MOCK ENDPOINT — NOT INTENDED FOR MVP PRODUCTION USE.\n\n"
+        "Legacy mock endpoint that returns crop suitability predictions for every municipality "
+        "using static heuristics instead of the production LightGBM model.\n\n"
         "Use cases:\n"
         "- Render a nationwide crop suitability map using the mock predictor.\n"
-        "- Compare viability across regions without issuing hundreds of single requests."
+        "- Compare viability across regions without issuing hundreds of single requests.\n\n"
+        "For real predictions, use POST /zoning/predict or POST /zoning/recommendations."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
