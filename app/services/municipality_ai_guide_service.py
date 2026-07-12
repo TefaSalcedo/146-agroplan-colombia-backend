@@ -23,6 +23,7 @@ from app.models import (
     MunicipalityCurrentWeather,
     MunicipalityMonthlyClimateForecast,
 )
+from app.config import get_settings
 from app.logger import get_logger
 from app.services.crop_catalog import CropCatalog
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
@@ -269,6 +270,27 @@ class MunicipalityAIGuideService:
         """
         now = datetime.now(timezone.utc)
         dane = municipality.dane_code
+
+        if not get_settings().llm_enabled:
+            return {
+                "municipality_id": dane,
+                "municipality_name": municipality.name,
+                "summary": "",
+                "alternative_crops": [],
+                "farming_systems": [],
+                "soil_and_fertilizer": [],
+                "generated_at": None,
+                "expires_at": None,
+                "cached": False,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
 
         def _fetch_guide() -> Optional[MunicipalityAIGuide]:
             return (

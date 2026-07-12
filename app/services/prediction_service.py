@@ -1134,6 +1134,19 @@ class PredictionService:
     ) -> Dict[str, Any]:
         """Generate and persist a per-crop LLM explanation."""
         try:
+            if not settings.llm_enabled:
+                return {
+                    "text": "",
+                    "status": "llm_disabled",
+                    "provider": None,
+                    "model": None,
+                    "tokens_in": None,
+                    "tokens_out": None,
+                    "tokens_total": None,
+                    "latency_ms": None,
+                    "error": None,
+                }
+
             llm = get_llm_service()
             llm_result = llm.generate_explanation(
                 prediction_data={

@@ -45,6 +45,7 @@ class LLMService:
         self.timeout = settings.llm_timeout_seconds
         self._round_robin_index = 0
         self._round_robin_lock = threading.Lock()
+        self._last_provider_model: Optional[tuple[str, str]] = None
 
     def _openrouter_config(self) -> Optional[Dict[str, Any]]:
         models = settings.openrouter_models_list
@@ -68,6 +69,17 @@ class LLMService:
             "base_url": "https://api.groq.com/openai/v1",
         }
 
+    def _cerebras_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.cerebras_models_list
+        if not settings.cerebras_api_key or not models:
+            return None
+        return {
+            "provider": "cerebras",
+            "api_key": settings.cerebras_api_key,
+            "models": models,
+            "base_url": "https://api.cerebras.ai/v1",
+        }
+
     def _get_model_pool(self) -> List[Dict[str, Any]]:
         """Return a flat list of all configured (provider, model) entries.
 
@@ -77,43 +89,47 @@ class LLMService:
         """
         pool: List[Dict[str, Any]] = []
 
-        openrouter = self._openrouter_config()
-        groq = self._groq_config()
-
+        providers = [
+            self._openrouter_config(),
+            self._groq_config(),
+            self._cerebras_config(),
+        ]
+        configured = [provider for provider in providers if provider]
         primary = settings.llm_provider.lower()
-        preferred = openrouter if primary == "openrouter" else groq
-        fallback = groq if primary == "openrouter" else openrouter
+        configured.sort(key=lambda provider: 0 if provider["provider"] == primary else 1)
 
-        preferred_models = preferred["models"] if preferred else []
-        fallback_models = fallback["models"] if fallback else []
-        max_len = max(len(preferred_models), len(fallback_models))
-
-        for i in range(max_len):
-            if i < len(preferred_models):
-                pool.append({
-                    "provider": preferred["provider"],
-                    "api_key": preferred["api_key"],
-                    "base_url": preferred["base_url"],
-                    "model": preferred_models[i],
-                })
-            if i < len(fallback_models):
-                pool.append({
-                    "provider": fallback["provider"],
-                    "api_key": fallback["api_key"],
-                    "base_url": fallback["base_url"],
-                    "model": fallback_models[i],
-                })
+        max_len = max((len(provider["models"]) for provider in configured), default=0)
+        for index in range(max_len):
+            for provider in configured:
+                if index < len(provider["models"]):
+                    pool.append({
+                        "provider": provider["provider"],
+                        "api_key": provider["api_key"],
+                        "base_url": provider["base_url"],
+                        "model": provider["models"][index],
+                    })
 
         return pool
 
     def _select_next_model(self, pool: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Pick the next model in the round-robin sequence."""
+        """Pick a model while avoiding the last provider/model pair."""
         if not pool:
             return None
         with self._round_robin_lock:
-            idx = self._round_robin_index % len(pool)
-            self._round_robin_index = (self._round_robin_index + 1) % len(pool)
-            return pool[idx]
+            pool_size = len(pool)
+            for offset in range(pool_size):
+                idx = (self._round_robin_index + offset) % pool_size
+                candidate = pool[idx]
+                pair = (candidate["provider"], candidate["model"])
+                if pair != self._last_provider_model or pool_size == 1:
+                    self._round_robin_index = (idx + 1) % pool_size
+                    return candidate
+            return pool[0]
+
+    def _record_model_execution(self, provider: str, model: str) -> None:
+        """Remember the provider/model pair that was actually called."""
+        with self._round_robin_lock:
+            self._last_provider_model = (provider, model)
 
     def _build_system_prompt(self, base_prompt: str, response_format: Optional[Dict] = None) -> str:
         """Append Spanish-language instruction unless the response must be structured JSON."""
@@ -343,6 +359,7 @@ class LLMService:
             model = entry["model"]
             logger.info("[generate_explanation] Calling LLM provider=%s model=%s", provider["provider"], model)
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider, model, system_prompt, user_content
             )
@@ -592,6 +609,7 @@ class LLMService:
             model = entry["model"]
             logger.info("[generate_national_crop_guide] Calling LLM provider=%s model=%s", provider["provider"], model)
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider,
                 model,
@@ -776,6 +794,7 @@ class LLMService:
                 model,
             )
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider,
                 model,

@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.logger import get_logger
 from app.models import Crop, CropMunicipalityRecommendation, Municipality
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
@@ -38,12 +39,35 @@ class CropRecommendationCacheService:
     ) -> Dict[str, Any]:
         """Return a cached or freshly generated recommendation.
 
+        When LLM is disabled, return an empty response without reading or
+        writing the recommendation cache.
+
         Uses an advisory lock to prevent concurrent requests from generating
         duplicate recommendations for the same crop-municipality pair.
         """
         now = datetime.now(timezone.utc)
         dane = municipality.dane_code
         crop_id = crop.id
+
+        if not get_settings().llm_enabled:
+            return {
+                "crop_id": crop_id,
+                "crop_name": crop.name,
+                "municipality_id": dane,
+                "municipality_name": municipality.name,
+                "text": "",
+                "cached": False,
+                "generated_at": None,
+                "expires_at": None,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
 
         def _fetch_recommendation() -> Optional[CropMunicipalityRecommendation]:
             return (

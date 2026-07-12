@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.logger import get_logger
 from app.models import Crop, CropNationalGuide
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
@@ -78,6 +79,25 @@ class CropNationalGuideService:
         generates a new one with the LLM, persists it and returns it.
         """
         now = datetime.now(timezone.utc)
+
+        if not get_settings().llm_enabled:
+            return {
+                "crop_id": crop.id,
+                "crop_name": crop.name,
+                "summary": "",
+                "sections": [],
+                "generated_at": None,
+                "expires_at": None,
+                "cached": False,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
 
         cached = (
             db.query(CropNationalGuide)

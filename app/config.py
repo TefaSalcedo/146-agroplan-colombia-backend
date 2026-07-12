@@ -23,11 +23,14 @@ class Settings(BaseSettings):
     hf_download_mode: str = "mvp"  # mvp | all | none
 
     # LLM
+    llm_enabled: bool = True
     llm_provider: str = "openrouter"
     openrouter_api_key: str = ""
     openrouter_models: str = ""
     groq_api_key: str = ""
     groq_models: str = ""
+    cerebras_api_key: str = ""
+    cerebras_models: str = ""
     llm_timeout_seconds: int = 30
 
     # Admin
@@ -73,6 +76,10 @@ class Settings(BaseSettings):
     @property
     def groq_models_list(self) -> list[str]:
         return [m.strip() for m in self.groq_models.split(",") if m.strip()]
+
+    @property
+    def cerebras_models_list(self) -> list[str]:
+        return [m.strip() for m in self.cerebras_models.split(",") if m.strip()]
 
     @property
     def effective_migration_url(self) -> str:
