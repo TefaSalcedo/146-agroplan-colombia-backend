@@ -54,36 +54,39 @@ class LLMService:
         }
 
     def _get_model_pool(self) -> List[Dict[str, Any]]:
-        """Return a flat list of all configured (provider, model) entries."""
+        """Return a flat list of all configured (provider, model) entries.
+
+        Providers are interleaved so that a failure in one provider immediately
+        falls back to the other provider, rather than exhausting every model
+        from the preferred provider first.
+        """
         pool: List[Dict[str, Any]] = []
 
         openrouter = self._openrouter_config()
         groq = self._groq_config()
 
         primary = settings.llm_provider.lower()
+        preferred = openrouter if primary == "openrouter" else groq
+        fallback = groq if primary == "openrouter" else openrouter
 
-        # Round-robin interleaves providers starting from the preferred one.
-        if primary == "openrouter":
-            first, second = openrouter, groq
-        else:
-            first, second = groq, openrouter
+        preferred_models = preferred["models"] if preferred else []
+        fallback_models = fallback["models"] if fallback else []
+        max_len = max(len(preferred_models), len(fallback_models))
 
-        if first:
-            for model in first["models"]:
+        for i in range(max_len):
+            if i < len(preferred_models):
                 pool.append({
-                    "provider": first["provider"],
-                    "api_key": first["api_key"],
-                    "base_url": first["base_url"],
-                    "model": model,
+                    "provider": preferred["provider"],
+                    "api_key": preferred["api_key"],
+                    "base_url": preferred["base_url"],
+                    "model": preferred_models[i],
                 })
-
-        if second:
-            for model in second["models"]:
+            if i < len(fallback_models):
                 pool.append({
-                    "provider": second["provider"],
-                    "api_key": second["api_key"],
-                    "base_url": second["base_url"],
-                    "model": model,
+                    "provider": fallback["provider"],
+                    "api_key": fallback["api_key"],
+                    "base_url": fallback["base_url"],
+                    "model": fallback_models[i],
                 })
 
         return pool
