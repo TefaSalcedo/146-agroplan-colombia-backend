@@ -182,3 +182,64 @@ class OpenMeteoService:
             })
 
         return records
+
+    def get_monthly_seasonal_forecast(
+        self,
+        lat: float,
+        lng: float,
+        months: int = 4,
+    ) -> list[dict]:
+        """Get monthly seasonal forecast from Open-Meteo Seasonal API.
+
+        Returns a list of monthly records with mean temperature, precipitation
+        and anomalies for the requested horizon. SEAS5 provides forecasts up to
+        7 months ahead and is updated monthly.
+        """
+        url = "https://seasonal-api.open-meteo.com/v1/seasonal"
+        params = {
+            "latitude": lat,
+            "longitude": lng,
+            "models": "ecmwf_seas5",
+            "monthly": (
+                "temperature_2m_mean,temperature_2m_anomaly,"
+                "precipitation_mean,precipitation_anomaly"
+            ),
+            "forecast_days": months * 30,
+            "timezone": "America/Bogota",
+        }
+
+        logger.debug(
+            "[get_monthly_seasonal_forecast] Calling Open-Meteo Seasonal (lat=%s, lng=%s, months=%s)",
+            lat, lng, months,
+        )
+        with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        monthly = data.get("monthly", {})
+        dates = monthly.get("time", [])
+        if not dates:
+            return []
+
+        records = []
+        for idx, date_str in enumerate(dates):
+            try:
+                parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
+                # Open-Meteo returns the last day of the month in the requested
+                # timezone. Normalize to the first day of the month for clarity.
+                forecast_month = parsed.replace(day=1)
+            except (ValueError, TypeError):
+                continue
+
+            records.append({
+                "forecast_month": forecast_month,
+                "temp_mean": monthly.get("temperature_2m_mean", [])[idx] if idx < len(monthly.get("temperature_2m_mean", [])) else None,
+                "temp_anomaly": monthly.get("temperature_2m_anomaly", [])[idx] if idx < len(monthly.get("temperature_2m_anomaly", [])) else None,
+                "precipitation": monthly.get("precipitation_mean", [])[idx] if idx < len(monthly.get("precipitation_mean", [])) else None,
+                "precipitation_anomaly": monthly.get("precipitation_anomaly", [])[idx] if idx < len(monthly.get("precipitation_anomaly", [])) else None,
+                "source": "open-meteo-seasonal",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        return records
