@@ -8,9 +8,11 @@ from app.schemas.crop import (
     CropListResponse,
     CropResponseLite,
     CropRecommendationResponse,
+    CropNationalGuideResponse,
 )
 from app.schemas.system import ErrorResponse
 from app.services.crop_catalog import CropCatalog
+from app.services.crop_national_guide_service import get_crop_national_guide_service
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.prediction_service import PredictionService
@@ -20,6 +22,7 @@ catalog = CropCatalog()
 municipality_catalog = MunicipalityCatalog()
 prediction_service = PredictionService()
 llm_service = get_llm_service()
+guide_service = get_crop_national_guide_service()
 logger = get_logger("app.routers.crops")
 
 
@@ -182,3 +185,34 @@ def get_crop_recommendation(
         status=llm_result.get("status", "llm_unavailable"),
         error=llm_result.get("error"),
     )
+
+
+@router.get(
+    "/{crop_id}/national-guide",
+    response_model=CropNationalGuideResponse,
+    summary="Get national farmer guide for a crop",
+    description=(
+        "Returns a farmer-friendly national guide for a crop. The guide covers "
+        "planting, harvest, basic techniques, seasons, common pests and important "
+        "warnings. It is generated with an LLM and cached for 3 months."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "Crop ID does not exist in catalog.",
+        },
+    },
+)
+def get_crop_national_guide(
+    crop_id: str = Path(..., description="Crop identifier (e.g. aguacate, cebolla)"),
+    db: Session = Depends(get_db),
+):
+    logger.info("[endpoint] GET /crops/{crop_id}/national-guide called (crop_id=%s)", crop_id)
+    crop = catalog.get_crop_model_by_id(db, crop_id)
+    if not crop:
+        logger.warning("[endpoint] Crop not found: %s", crop_id)
+        raise HTTPException(status_code=404, detail="Crop not found")
+
+    guide = guide_service.get_or_generate(db=db, crop=crop)
+    logger.info("[endpoint] GET /crops/{crop_id}/national-guide returning guide for crop_id=%s", crop_id)
+    return CropNationalGuideResponse(**guide)
