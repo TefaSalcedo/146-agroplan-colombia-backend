@@ -40,15 +40,32 @@ def _parse_months_string(value: Any) -> List[int]:
     return [int(m.strip()) for m in str(value).split(",") if m.strip().isdigit()]
 
 
+# Fallback planting months for the 7 zoning crops when FAO calendar is missing.
+# Based on typical Colombian agronomic windows + EcoCrop cycle data.
+_DEFAULT_PLANTING_MONTHS = {
+    "aguacate": [3, 4, 9, 10],
+    "pina": [3, 4, 5, 6],
+    "cebolla": [3, 4, 9, 10],
+    "fresa": [3, 4, 9, 10],
+    "soya": [3, 4, 9, 10],
+    "cana_panelera": [3, 4, 5, 6],
+    "algodon": [3, 4, 9, 10],
+}
+
+
 def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str, Any]:
-    """Return crop calendar info from EVA/FAO data or fallback to crop catalog."""
+    """Return crop calendar info from EVA/FAO data or fallback to defaults.
+
+    The EVA/FAO calendar only covers onion and soybean for our 7 crops. For the
+    rest we use EcoCrop cycle duration (gmin/gmax) and a default planting window.
+    """
     from app.services.crop_catalog import CropCatalog
 
     crop_catalog = CropCatalog()
     crop = crop_catalog.get_crop_model_by_id(db, crop_id)
 
     defaults = {
-        "planting_months": crop.planting_months if crop else [],
+        "planting_months": crop.planting_months if crop and crop.planting_months else _DEFAULT_PLANTING_MONTHS.get(crop_id, []),
         "duration_days_min": crop.days_to_harvest if crop else 90,
         "duration_days_max": crop.days_to_harvest if crop else 120,
         "cycle_days_min": crop.days_to_harvest if crop else 90,
@@ -71,12 +88,23 @@ def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str,
         fao_dur_min = row.get("fao_duration_min_dias")
         fao_dur_max = row.get("fao_duration_max_dias")
 
+        def _valid_int(value):
+            if value is None or pd.isna(value):
+                return None
+            v = int(value)
+            return v if v > 0 else None
+
+        dur_min = _valid_int(fao_dur_min) or _valid_int(gmin) or defaults["duration_days_min"]
+        dur_max = _valid_int(fao_dur_max) or _valid_int(gmax) or defaults["duration_days_max"]
+        cycle_min = _valid_int(gmin) or defaults["cycle_days_min"]
+        cycle_max = _valid_int(gmax) or defaults["cycle_days_max"]
+
         return {
             "planting_months": fao_months if fao_months else defaults["planting_months"],
-            "duration_days_min": int(fao_dur_min) if pd.notna(fao_dur_min) else (int(gmin) if pd.notna(gmin) else defaults["duration_days_min"]),
-            "duration_days_max": int(fao_dur_max) if pd.notna(fao_dur_max) else (int(gmax) if pd.notna(gmax) else defaults["duration_days_max"]),
-            "cycle_days_min": int(gmin) if pd.notna(gmin) else defaults["cycle_days_min"],
-            "cycle_days_max": int(gmax) if pd.notna(gmax) else defaults["cycle_days_max"],
+            "duration_days_min": dur_min,
+            "duration_days_max": dur_max,
+            "cycle_days_min": cycle_min,
+            "cycle_days_max": cycle_max,
         }
     except Exception:
         return defaults
