@@ -338,6 +338,122 @@ class LLMService:
             "error": "All providers failed",
         }
 
+    def generate_crop_recommendation(
+        self,
+        crop: Dict[str, Any],
+        municipality: Dict[str, Any],
+        climate_summary: Dict[str, Any],
+        soil_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate a short, practical recommendation for a crop in a municipality.
+
+        Returns the same audit fields as generate_explanation plus a farmer-facing
+        recommendation text.
+        """
+        start = time.time()
+
+        system_prompt = (
+            "Eres un asistente agronomo para campesinos de Colombia. "
+            "Responde SIEMPRE en espanol, en un solo parrafo corto (maximo 120 palabras). "
+            "Usa lenguaje sencillo y util para el dia a dia del agricultor. "
+            "Da UNA recomendacion clara: si conviene sembrar este cultivo en este municipio, "
+            "en que meses plantar, cuidados basicos de suelo/riego, y advertencias si el clima "
+            "o suelo no son adecuados. No inventes datos; usa solo la informacion proporcionada."
+        )
+
+        user_content = json.dumps(
+            {
+                "cultivo": crop,
+                "municipio": municipality,
+                "clima": climate_summary,
+                "suelo": soil_summary,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
+        pool = self._get_model_pool()
+        logger.debug("[generate_crop_recommendation] LLM pool has %s entries", len(pool))
+
+        if not pool:
+            latency_ms = int((time.time() - start) * 1000)
+            logger.warning("[generate_crop_recommendation] No LLM providers configured")
+            return {
+                "text": "",
+                "status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": latency_ms,
+                "error": "No LLM providers configured",
+            }
+
+        first_selected = self._select_next_model(pool)
+        if first_selected is None:
+            return {
+                "text": "",
+                "status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": "No LLM models available",
+            }
+
+        logger.info("[generate_crop_recommendation] Starting round-robin LLM calls (first=%s/%s)", first_selected["provider"], first_selected["model"])
+
+        start_idx = pool.index(first_selected)
+        ordered_pool = pool[start_idx:] + pool[:start_idx]
+
+        for entry in ordered_pool:
+            provider = {
+                "provider": entry["provider"],
+                "api_key": entry["api_key"],
+                "base_url": entry["base_url"],
+            }
+            model = entry["model"]
+            logger.info("[generate_crop_recommendation] Calling LLM provider=%s model=%s", provider["provider"], model)
+
+            result = self._call_provider(provider, model, system_prompt, user_content)
+
+            if result is None:
+                logger.warning("[generate_crop_recommendation] Provider %s/%s returned None", provider["provider"], model)
+                continue
+
+            if "error" in result:
+                logger.warning("[generate_crop_recommendation] Provider %s/%s failed: %s", provider["provider"], model, result["error"])
+                continue
+
+            latency_ms = int((time.time() - start) * 1000)
+            text = result.get("content", "").strip()
+            logger.info("[generate_crop_recommendation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
+
+            return {
+                "text": text,
+                "status": "success",
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+                "latency_ms": latency_ms,
+                "error": None,
+            }
+
+        latency_ms = int((time.time() - start) * 1000)
+        logger.warning("[generate_crop_recommendation] All LLM providers failed after round-robin (latency_ms=%s)", latency_ms)
+        return {
+            "text": "",
+            "status": "llm_unavailable",
+            "provider": None,
+            "model": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "latency_ms": latency_ms,
+            "error": "All providers failed",
+        }
+
     def is_configured(self) -> bool:
         """Check if at least one LLM provider is configured."""
         return len(self._get_model_pool()) > 0

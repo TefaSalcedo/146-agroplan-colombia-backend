@@ -21,10 +21,6 @@ class CropCatalog:
             name=crop.name,
             scientific_name=crop.scientific_name or "",
             image=crop.image or "",
-            success_rate=crop.success_rate or 0,
-            recommendation=crop.recommendation or "medium",
-            short_reason=crop.short_reason or "",
-            reason=crop.reason or "",
             days_to_harvest=crop.days_to_harvest or 0,
             soil_type=crop.soil_type or "",
             ideal_temperature=crop.ideal_temperature or "",
@@ -44,8 +40,6 @@ class CropCatalog:
             id=crop.id,
             name=crop.name,
             image=crop.image or "",
-            recommendation=crop.recommendation or "medium",
-            success_rate=crop.success_rate or 0,
         )
 
     def get_all_crops(self, db: Session) -> List[CropResponse]:

@@ -238,6 +238,7 @@ docker compose restart api
 | `GET` | `/api/v1/crops` | Catálogo completo de cultivos (7 soportados) |
 | `GET` | `/api/v1/crops/lite` | Lista ligera de cultivos |
 | `GET` | `/api/v1/crops/{crop_id}` | Ficha de un cultivo |
+| `GET` | `/api/v1/crops/{crop_id}/recommendations/{municipality_id}` | Recomendación práctica del cultivo para un municipio |
 
 ### Zoning
 
@@ -346,7 +347,30 @@ curl http://localhost:8000/api/v1/municipalities/05001
 curl http://localhost:8000/api/v1/crops
 ```
 
-Retorna los 7 cultivos soportados: `aguacate`, `algodon`, `cana_panelera`, `cebolla`, `fresa`, `pina`, `soya`.
+Retorna los 7 cultivos soportados: `aguacate`, `algodon`, `cana_panelera`, `cebolla`, `fresa`, `pina`, `soya`. Los datos provienen de FAO/EcoCrop; no incluyen tasas de éxito ni recomendaciones mockeadas.
+
+### Recomendación práctica para un cultivo en un municipio
+
+```bash
+curl http://localhost:8000/api/v1/crops/aguacate/recommendations/05001
+```
+
+```json
+{
+  "crop_id": "aguacate",
+  "crop_name": "Aguacate",
+  "municipality_id": "05001",
+  "municipality_name": "MEDELLÍN",
+  "text": "En Medellín el aguacate se adapta bien gracias a la altitud media y temperaturas frescas. Se recomienda plantar en marzo-abril o septiembre-octubre, mantener suelo bien drenado y riego moderado.",
+  "status": "success",
+  "provider": "groq",
+  "model": "llama-3.3-70b-versatile",
+  "tokens_in": 520,
+  "tokens_out": 95,
+  "tokens_total": 615,
+  "latency_ms": 2100
+}
+```
 
 ### Zonificación y recomendación por municipio
 

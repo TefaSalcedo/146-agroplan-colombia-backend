@@ -13,7 +13,7 @@ def test_list_crops(client):
 
 
 def test_list_crops_lite(client):
-    """Lite endpoint returns lightweight crop entries."""
+    """Lite endpoint returns lightweight crop entries without mock fields."""
     response = client.get("/api/v1/crops/lite")
     assert response.status_code == 200
     data = response.json()
@@ -22,8 +22,8 @@ def test_list_crops_lite(client):
         assert "id" in crop
         assert "name" in crop
         assert "image" in crop
-        assert "recommendation" in crop
-        assert "success_rate" in crop
+        assert "recommendation" not in crop
+        assert "success_rate" not in crop
 
 
 def test_get_crop_by_id(client):
@@ -41,3 +41,21 @@ def test_get_crop_not_found(client):
     """Non-existent crop returns 404."""
     response = client.get("/api/v1/crops/cafe")
     assert response.status_code == 404
+
+
+def test_get_crop_recommendation(client):
+    """Crop recommendation endpoint returns LLM-based advice for a municipality."""
+    response = client.get("/api/v1/crops/aguacate/recommendations/05001")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["crop_id"] == "aguacate"
+    assert data["municipality_id"] == "05001"
+    assert data["municipality_name"] == "MEDELL\u00cdN"
+    assert "text" in data
+    assert "status" in data
+    assert data["status"] in ("success", "llm_unavailable")
+    assert "provider" in data
+    assert "model" in data
+    assert "tokens_in" in data
+    assert "tokens_out" in data
+    assert "tokens_total" in data

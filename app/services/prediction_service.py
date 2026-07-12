@@ -964,6 +964,95 @@ class PredictionService:
         )
         return result_payload
 
+    def get_crop_recommendation_context(
+        self,
+        db: Session,
+        crop_id: str,
+        municipality_id: str,
+    ) -> Dict[str, Any]:
+        """Build context for an LLM recommendation: crop + municipality climate/soil data."""
+        from app.services.crop_catalog import CropCatalog
+        from app.services.municipality_catalog import MunicipalityCatalog
+        from app.models import Municipality, MunicipalityCurrentWeather
+        from app.services.model_loader import get_model_loader
+
+        crop_catalog = CropCatalog()
+        municipality_catalog = MunicipalityCatalog()
+
+        crop = crop_catalog.get_crop_model_by_id(db, crop_id)
+        municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
+        if not crop or not municipality:
+            return {}
+
+        loader = get_model_loader()
+        profiles = loader.municipality_profiles
+        profile_row = profiles[profiles["cod_dane_m"] == int(municipality_id)]
+
+        climate_features = {}
+        if not profile_row.empty:
+            feature_cols = [
+                "t2m", "prectotcorr", "rh2m", "allsky_sfc_sw_dwn",
+            ]
+            for col in feature_cols:
+                if col in profile_row.columns:
+                    climate_features[col] = float(profile_row[col].values[0])
+
+        # Current weather summary
+        current = (
+            db.query(MunicipalityCurrentWeather)
+            .filter(MunicipalityCurrentWeather.municipality_dane_code == municipality_id)
+            .first()
+        )
+        current_weather = {}
+        if current:
+            current_weather = {
+                "temperature": current.temperature,
+                "precipitation": current.precipitation,
+                "humidity": current.humidity,
+            }
+
+        # Soil from profile columns
+        soil_features = {}
+        soil_cols = [
+            "ph_agua_suelo_mean", "materia_organica_mean", "fosforo_bray_ii_mean",
+            "calcio_intercambiable_mean", "magnesio_intercambiable_mean",
+            "potasio_intercambiable_mean", "capacidad_intercambio_cationico_mean",
+            "conductividad_electrica_mean",
+        ]
+        if not profile_row.empty:
+            for col in soil_cols:
+                if col in profile_row.columns:
+                    soil_features[col] = float(profile_row[col].values[0])
+
+        return {
+            "crop": {
+                "id": crop.id,
+                "name": crop.name,
+                "scientific_name": crop.scientific_name or "",
+                "ideal_temperature": crop.ideal_temperature or "",
+                "precipitation": crop.precipitation or "",
+                "humidity": crop.humidity or "",
+                "altitude": crop.altitude or "",
+                "soil_type": crop.soil_type or "",
+                "irrigation": crop.irrigation or "",
+                "planting_months": crop.planting_months or [],
+                "harvest_months": crop.harvest_months or [],
+                "days_to_harvest": crop.days_to_harvest,
+            },
+            "municipality": {
+                "dane_code": municipality.dane_code,
+                "name": municipality.name,
+                "lat": municipality.lat,
+                "lng": municipality.lng,
+                "altitude": municipality.altitude,
+            },
+            "climate_summary": {
+                "long_term": climate_features,
+                "current": current_weather,
+            },
+            "soil_summary": soil_features,
+        }
+
     def _generate_crop_explanation(
         self,
         db: Session,

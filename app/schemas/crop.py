@@ -24,10 +24,6 @@ class CropResponse(BaseModel):
     name: str = Field(description="Crop common name")
     scientific_name: str = Field(description="Scientific name")
     image: str = Field(description="URL or path to crop image")
-    success_rate: int = Field(description="Historical success rate (0-100)")
-    recommendation: str = Field(description="Short recommendation summary")
-    short_reason: str = Field(description="One-line reason for the recommendation")
-    reason: str = Field(description="Longer explanation of why the crop is recommended")
     days_to_harvest: int = Field(description="Typical days to harvest")
     soil_type: str = Field(description="Recommended soil type")
     ideal_temperature: str = Field(description="Ideal temperature range")
@@ -48,8 +44,6 @@ class CropResponseLite(BaseModel):
     id: str = Field(description="Crop identifier")
     name: str = Field(description="Crop common name")
     image: str = Field(description="URL or path to crop image")
-    recommendation: str = Field(description="Short recommendation summary")
-    success_rate: int = Field(description="Historical success rate (0-100)")
 
 
 class CropListResponse(BaseModel):
@@ -59,7 +53,19 @@ class CropListResponse(BaseModel):
     count: int = Field(description="Total number of crops")
 
 
-class TopCropResponse(CropResponse):
-    """Highest ranked crop in a recommendation, including suitability."""
+class CropRecommendationResponse(BaseModel):
+    """LLM-generated recommendation for a specific crop in a municipality."""
 
-    suitability: str = Field(description="Suitability level: high, medium, low, none")
+    crop_id: str = Field(description="Crop identifier")
+    crop_name: str = Field(description="Crop common name")
+    municipality_id: str = Field(description="Municipality DANE code")
+    municipality_name: str = Field(description="Municipality name")
+    text: str = Field(description="Plain-language recommendation for the farmer")
+    provider: Optional[str] = Field(default=None, description="LLM provider used")
+    model: Optional[str] = Field(default=None, description="LLM model used")
+    tokens_in: Optional[int] = Field(default=None, description="Input tokens consumed")
+    tokens_out: Optional[int] = Field(default=None, description="Output tokens consumed")
+    tokens_total: Optional[int] = Field(default=None, description="Total tokens consumed")
+    latency_ms: Optional[int] = Field(default=None, description="LLM call latency in milliseconds")
+    status: str = Field(description="LLM generation status: success or llm_unavailable")
+    error: Optional[str] = Field(default=None, description="Error message if generation failed")
