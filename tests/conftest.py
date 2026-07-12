@@ -1,6 +1,7 @@
 """Test configuration and fixtures."""
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,13 @@ os.environ["ML_MODELS_PATH"] = "./models"
 def client():
     """FastAPI test client with real database."""
     from app.main import app
+
+    # Disable lifespan to avoid scheduler and model loading during tests
+    @asynccontextmanager
+    async def _noop_lifespan(app):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
 
     with TestClient(app) as c:
         yield c
