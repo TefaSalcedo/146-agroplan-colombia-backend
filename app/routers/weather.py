@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from httpx import HTTPError
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.logger import get_logger
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.open_meteo import OpenMeteoService
 from app.schemas.weather import WeatherResponse
@@ -10,6 +11,7 @@ from app.schemas.system import ErrorResponse
 router = APIRouter(prefix="/weather", tags=["weather"])
 municipality_catalog = MunicipalityCatalog()
 weather_service = OpenMeteoService()
+logger = get_logger("app.routers.weather")
 
 
 @router.get(
@@ -37,16 +39,22 @@ async def get_weather(
     municipality_id: str = Path(..., description="AgroPlan municipality ID"),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] GET /weather/{municipality_id} called (municipality_id=%s)", municipality_id)
+    logger.debug("[endpoint] Querying database for municipality_id=%s", municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
+    logger.info("[endpoint] Calling Open-Meteo for municipality_id=%s (lat=%s, lng=%s)", municipality_id, municipality.lat, municipality.lng)
     try:
         weather_data = await weather_service.get_current_weather(
             lat=municipality.lat,
             lng=municipality.lng,
         )
     except HTTPError as exc:
+        logger.error("[endpoint] Open-Meteo request failed for municipality_id=%s: %s", municipality_id, exc)
         raise HTTPException(status_code=502, detail="Weather provider unavailable") from exc
 
+    logger.info("[endpoint] GET /weather/{municipality_id} returning weather for municipality_id=%s", municipality_id)
     return WeatherResponse(**weather_data)

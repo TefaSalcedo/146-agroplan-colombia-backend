@@ -153,6 +153,22 @@ docker compose logs -f api
 docker compose logs -f db
 ```
 
+Puedes aumentar el detalle de los logs con la variable `LOG_LEVEL` en `.env`:
+
+```bash
+LOG_LEVEL=DEBUG
+```
+
+- `DEBUG`: muestra paso a paso cada endpoint, consulta a base de datos, llamada a modelos ML, carga de perfiles/parquets, llamadas a LLM y sincronización con Open-Meteo.
+- `INFO` (default): muestra entradas/salidas de endpoints, eventos de modelos y resúmenes de jobs.
+- `WARNING`/`ERROR`: solo errores y advertencias.
+
+Reinicia el contenedor para aplicar el cambio:
+
+```bash
+docker compose restart api
+```
+
 ## Variables de Entorno
 
 | Variable | Descripción | Ejemplo |
@@ -174,6 +190,7 @@ docker compose logs -f db
 | `LLM_TIMEOUT_SECONDS` | Timeout por llamada LLM | `30` |
 | `ADMIN_API_KEY` | API key para endpoints admin | `tu-admin-key-segura` |
 | `CACHE_TTL_STRATEGY` | Estrategia de TTL de caché | `end_of_month_bogota` |
+|| `LOG_LEVEL` | Nivel de logging (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `API_V1_PREFIX` | Prefijo de la API | `/api/v1` |
 | `CORS_ORIGINS` | Orígenes permitidos | `http://localhost:3000,http://localhost:3001` |
 | `ENABLE_CLIMATE_SYNC` | Habilitar sync programado | `true` |

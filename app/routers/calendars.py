@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logger import get_logger
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.crop_catalog import CropCatalog
 from app.services.mock_predictor import MockPredictor
@@ -23,6 +24,7 @@ municipality_catalog = MunicipalityCatalog()
 crop_catalog = CropCatalog()
 mock_predictor = MockPredictor()
 prediction_service = PredictionService()
+logger = get_logger("app.routers.calendars")
 
 
 @router.post(
@@ -60,14 +62,21 @@ def predict_calendar(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /calendars/predict (MOCK) called (crop_id=%s, municipality_id=%s)", request.crop_id, request.municipality_id)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
+    logger.debug("[endpoint] Querying database for crop_id=%s", request.crop_id)
     crop = crop_catalog.get_crop_model_by_id(db, request.crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", request.crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
+    logger.info("[endpoint] Calling MockPredictor.predict_calendar")
     prediction = mock_predictor.predict_calendar(
         crop_id=request.crop_id,
         municipality_id=request.municipality_id,
@@ -75,6 +84,7 @@ def predict_calendar(
         year=request.year,
         planting_months=crop.planting_months or [],
     )
+    logger.info("[endpoint] POST /calendars/predict (MOCK) returning calendar for month=%s/%s", request.month, request.year)
 
     return CalendarResponse(**prediction)
 
@@ -113,16 +123,23 @@ def predict_calendar_batch(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /calendars/predict-batch called (municipality_id=%s, crop_ids=%s, horizon_months=%s)", request.municipality_id, request.crop_ids, request.horizon_months)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
     crop_ids = request.crop_ids
     if not crop_ids:
+        logger.debug("[endpoint] No crop_ids provided; fetching all ML-supported crops")
         ml_crops = crop_catalog.get_ml_supported_crops(db)
         crop_ids = [c.id for c in ml_crops]
+        logger.debug("[endpoint] Predicting calendars for %s crops", len(crop_ids))
 
     # Get prediction from service
+    logger.info("[endpoint] Calling PredictionService.predict_calendar_batch")
     raw = prediction_service.predict_calendar_batch(
         db=db,
         municipality_id=request.municipality_id,
@@ -131,11 +148,13 @@ def predict_calendar_batch(
     )
 
     # Try LLM explanation
+    logger.info("[endpoint] Calling LLM service for explanation")
     llm = get_llm_service()
     llm_result = llm.generate_explanation(
         prediction_data=raw,
         municipality_name=municipality.name,
     )
+    logger.info("[endpoint] LLM explanation status=%s", llm_result.get("llm_status"))
 
     # Build response
     results = []
@@ -156,6 +175,7 @@ def predict_calendar_batch(
             )
         )
 
+    logger.info("[endpoint] POST /calendars/predict-batch returning %s crop results", len(results))
     return CalendarBatchResponse(
         municipality_id=request.municipality_id,
         municipality_name=municipality.name,

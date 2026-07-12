@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     climate_sync_days_ahead: int = 16
     climate_sync_cleanup_days: int = 180
 
+    # Observability / Debug logging
+    log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    log_format: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,

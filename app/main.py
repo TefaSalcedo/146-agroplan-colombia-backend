@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.logger import configure_logging, get_logger
 from app.routers import (
     municipalities,
     weather,
@@ -25,6 +26,10 @@ from app.schemas.system import (
 from app.services.climate_scheduler import get_scheduler, schedule_climate_jobs
 from app.services.model_loader import get_model_loader
 
+# Configure logging as early as possible so every module inherits the level/format.
+configure_logging()
+
+logger = get_logger("app.main")
 settings = get_settings()
 
 OPENAPI_TAGS = [
@@ -44,22 +49,28 @@ OPENAPI_TAGS = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: load models and start scheduler on startup."""
+    logger.info("[startup] Beginning application startup")
+
     # Load ML models
+    logger.info("[startup] Loading ML models and reference artifacts")
     loader = get_model_loader()
     status = loader.get_status()
     if status["zoning_model_loaded"]:
-        print("[startup] ML models loaded successfully")
+        logger.info("[startup] ML models loaded successfully")
     else:
-        print(f"[startup] ML models not loaded: {status.get('load_error', 'no models configured')}")
+        logger.error(f"[startup] ML models not loaded: {status.get('load_error', 'no models configured')}")
 
     # Start climate sync scheduler
+    logger.info("[startup] Configuring climate sync scheduler (enable_climate_sync=%s)", settings.enable_climate_sync)
     scheduler = get_scheduler()
     schedule_climate_jobs(scheduler)
     scheduler.start()
+    logger.info("[startup] Application startup complete")
 
     yield
 
     # Shutdown: stop scheduler
+    logger.info("[shutdown] Stopping climate sync scheduler")
     scheduler.shutdown(wait=False)
 
 

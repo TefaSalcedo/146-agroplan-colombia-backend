@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from app.logger import get_logger
+
+logger = get_logger("app.services.feature_builder")
+
 
 # Map backend crop ids to names used in the yield historical profiles.
 # Yield profiles use Spanish EVA crop names; zoning uses backend ids directly.
@@ -103,20 +107,25 @@ def build_zoning_features(
     Returns None if the municipality profile is missing or the model artifacts
     are not loaded.
     """
+    logger.debug("[build_zoning_features] Starting (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
     if (
         not loader.is_zoning_model_loaded()
         or loader.zoning_preprocessor is None
         or loader.zoning_feature_schema is None
         or loader.municipality_profiles is None
     ):
+        logger.debug("[build_zoning_features] Zoning model artifacts or profiles not loaded")
         return None
 
     profile = _get_municipality_profile(loader, municipality_id)
     if profile is None:
+        logger.warning("[build_zoning_features] Municipality profile not found for %s", municipality_id)
         return None
+    logger.debug("[build_zoning_features] Municipality profile found")
 
     schema = loader.zoning_feature_schema
     feature_names = schema["feature_names"]
+    logger.debug("[build_zoning_features] Feature schema has %s features", len(feature_names))
 
     # Start from the municipality profile values
     row: Dict[str, Any] = {}
@@ -149,6 +158,7 @@ def build_zoning_features(
         df[col] = 0
     df = df[feature_names]
 
+    logger.debug("[build_zoning_features] Built feature vector with shape=%s", df.shape)
     return df
 
 
@@ -163,16 +173,20 @@ def _get_yield_historical_records(
     no municipality-level history exists, so the calendar endpoint can produce a
     signal for any supported crop.
     """
+    logger.debug("[_get_yield_historical_records] Looking up historical records (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
     profiles = loader.yield_profiles
     if profiles is None:
+        logger.debug("[_get_yield_historical_records] Yield profiles not loaded")
         return None
     try:
         dane_int = int(municipality_id)
     except ValueError:
+        logger.warning("[_get_yield_historical_records] Invalid municipality_id=%s", municipality_id)
         return None
 
     crop_name = _YIELD_CROP_NAME_MAP.get(crop_id)
     if not crop_name:
+        logger.warning("[_get_yield_historical_records] Unknown crop_id=%s", crop_id)
         return None
 
     dept_code = dane_int // 1000
@@ -183,21 +197,27 @@ def _get_yield_historical_records(
         & (profiles["cultivo"] == crop_name)
     ]
     if not rows.empty:
+        logger.debug("[_get_yield_historical_records] Found municipality-crop history with %s rows", len(rows))
         return rows.sort_values(["año", "semestre"])
 
     # 2. Department-crop average (most recent synthetic record)
+    logger.debug("[_get_yield_historical_records] No municipality history; falling back to department average")
     dept_rows = profiles[
         (profiles["c_digo_dane_departamento"] == dept_code)
         & (profiles["cultivo"] == crop_name)
     ]
     if not dept_rows.empty:
+        logger.debug("[_get_yield_historical_records] Found department-crop average with %s rows", len(dept_rows))
         return _synthetic_profile(dept_rows, dane_int, dept_code)
 
     # 3. National-crop average
+    logger.debug("[_get_yield_historical_records] No department history; falling back to national average")
     national_rows = profiles[profiles["cultivo"] == crop_name]
     if not national_rows.empty:
+        logger.debug("[_get_yield_historical_records] Found national-crop average with %s rows", len(national_rows))
         return _synthetic_profile(national_rows, dane_int, dept_code)
 
+    logger.warning("[_get_yield_historical_records] No historical records found for crop_id=%s municipality_id=%s", crop_id, municipality_id)
     return None
 
 
@@ -265,12 +285,14 @@ def build_yield_features(
     Returns (X_xgb, X_lgbm) or None when historical records or artifacts are
     missing. Both matrices are aligned with their respective feature schemas.
     """
+    logger.debug("[build_yield_features] Starting (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
     if (
         not loader.is_yield_model_loaded()
         or loader.yield_preprocessor is None
         or loader.yield_feature_schema is None
         or loader.yield_profiles is None
     ):
+        logger.debug("[build_yield_features] Yield model artifacts or profiles not loaded")
         return None
 
     hist = _get_yield_historical_records(loader, municipality_id, crop_id)
@@ -279,7 +301,10 @@ def build_yield_features(
 
     historical = _build_yield_historical_features(hist)
     if historical is None:
+        logger.warning("[build_yield_features] Could not build historical features")
         return None
+
+    logger.debug("[build_yield_features] Built %s historical features", len(historical))
 
     schema = loader.yield_feature_schema
     xgb_schema = schema.get("xgboost", {})
@@ -379,4 +404,5 @@ def build_yield_features(
             df_lgbm[col] = 0
     df_lgbm = df_lgbm[lgbm_features]
 
+    logger.debug("[build_yield_features] Built XGB shape=%s and LGBM shape=%s", df_xgb.shape, df_lgbm.shape)
     return df_xgb, df_lgbm

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logger import get_logger
 from app.schemas.crop import CropResponseLite, TopCropResponse
 from app.schemas.recommendation import (
     NextPlantingSeason,
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 municipality_catalog = MunicipalityCatalog()
 crop_catalog = CropCatalog()
 predictor = MockPredictor()
+logger = get_logger("app.routers.recommendations")
 
 MONTHS_LONG = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -59,11 +61,17 @@ def get_recommendations(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /recommendations (MOCK) called (municipality_id=%s)", request.municipality_id)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
+    logger.debug("[endpoint] Querying database for all crops")
     all_crops = crop_catalog.get_all_crops(db)
+    logger.info("[endpoint] Calling MockPredictor.predict_zoning for %s crops", len(all_crops))
 
     crop_scores = []
     for crop in all_crops:
@@ -116,6 +124,7 @@ def get_recommendations(
         crops=plantable_crops[:4],
     )
 
+    logger.info("[endpoint] POST /recommendations (MOCK) returning top_crop=%s", top_crop.id)
     return RecommendationResponse(
         top_crop=top_crop,
         other_crops=other_crops,

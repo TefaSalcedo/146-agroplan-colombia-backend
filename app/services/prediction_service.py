@@ -16,11 +16,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.config import get_settings
+from app.logger import get_logger
 from app.models import PredictionCache, PredictionRun
 from app.services.feature_builder import build_yield_features, build_zoning_features
 from app.services.mock_predictor import MockPredictor
 
 settings = get_settings()
+logger = get_logger("app.services.prediction_service")
 
 
 # Mapping from model class index to API suitability label for zoning.
@@ -156,15 +158,19 @@ def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str
     Returns None if any required artifact is missing so the caller can fall
     back to mock predictions.
     """
+    logger.debug("[_predict_yield_with_ensemble] Starting yield ensemble (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
     try:
         from app.services.model_loader import get_model_loader
 
         loader = get_model_loader()
         if not loader.is_yield_model_loaded():
+            logger.debug("[_predict_yield_with_ensemble] Yield models not loaded; skipping ensemble")
             return None
 
+        logger.debug("[_predict_yield_with_ensemble] Building yield features")
         features = build_yield_features(db, crop_id, municipality_id, loader)
         if features is None:
+            logger.debug("[_predict_yield_with_ensemble] Yield features are None; skipping ensemble")
             return None
 
         X_xgb, X_lgbm = features
@@ -172,19 +178,27 @@ def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str
         lgbm_pred = None
 
         if loader.yield_xgb_model is not None and X_xgb is not None:
+            logger.debug("[_predict_yield_with_ensemble] Running XGBoost yield model")
             xgb_pred = float(loader.yield_xgb_model.predict(X_xgb)[0])
+            logger.debug("[_predict_yield_with_ensemble] XGBoost prediction: %s", xgb_pred)
         if loader.yield_lgbm_model is not None and X_lgbm is not None:
+            logger.debug("[_predict_yield_with_ensemble] Running LightGBM yield model")
             lgbm_pred = float(loader.yield_lgbm_model.predict(X_lgbm)[0])
+            logger.debug("[_predict_yield_with_ensemble] LightGBM prediction: %s", lgbm_pred)
 
         if xgb_pred is None and lgbm_pred is None:
+            logger.warning("[_predict_yield_with_ensemble] Both yield models returned None")
             return None
 
         if xgb_pred is not None and lgbm_pred is not None:
             prediction = loader.yield_xgb_weight * xgb_pred + loader.yield_lgbm_weight * lgbm_pred
+            logger.info("[_predict_yield_with_ensemble] Ensemble prediction (xgb=%s, lgbm=%s, weighted=%s)", xgb_pred, lgbm_pred, prediction)
         elif xgb_pred is not None:
             prediction = xgb_pred
+            logger.info("[_predict_yield_with_ensemble] Using XGBoost prediction only: %s", prediction)
         else:
             prediction = lgbm_pred
+            logger.info("[_predict_yield_with_ensemble] Using LightGBM prediction only: %s", prediction)
 
         return {
             "yield_prediction": round(float(prediction), 4),
@@ -192,7 +206,8 @@ def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str
             "yield_confidence": "medium",
             "method": "yield_ensemble",
         }
-    except Exception:
+    except Exception as e:
+        logger.error("[_predict_yield_with_ensemble] Yield ensemble failed: %s", e)
         return None
 
 
@@ -326,37 +341,51 @@ class PredictionService:
         5. Store in cache
         6. Log audit
         """
+        logger.info("[predict_zoning] Starting prediction (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
         cache_key = _make_cache_key("zoning", crop_id=crop_id, municipality_id=municipality_id)
+        logger.debug("[predict_zoning] cache_key=%s", cache_key)
 
         # Step 1: Check cache
+        logger.debug("[predict_zoning] Checking prediction cache")
         cached = self._check_cache(db, cache_key)
         if cached:
+            logger.info("[predict_zoning] Cache hit for (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
             cached["cache_hit"] = True
             return cached
+        logger.debug("[predict_zoning] Cache miss")
 
         # Step 2: Advisory lock
         lock_key = abs(hash(cache_key)) % (2**31)
+        logger.debug("[predict_zoning] Acquiring advisory lock key=%s", lock_key)
         db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key})
 
         # Step 3: Double-check cache
+        logger.debug("[predict_zoning] Double-checking prediction cache after lock")
         cached = self._check_cache(db, cache_key)
         if cached:
+            logger.info("[predict_zoning] Cache hit after lock for (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
             cached["cache_hit"] = True
             return cached
 
         # Step 4: Inference
+        logger.info("[predict_zoning] Running inference")
         start = time.time()
         loader = self._get_model_loader()
+        logger.debug("[predict_zoning] Model loader loaded=%s", loader.is_zoning_model_loaded() if loader else False)
         result: Optional[Dict] = None
         method = "mock"
         fallback_used = False
         missing_features: Optional[List[str]] = None
 
         if loader and loader.is_zoning_model_loaded():
+            logger.info("[predict_zoning] Building zoning features")
             X = build_zoning_features(db, crop_id, municipality_id, loader)
+            logger.debug("[predict_zoning] Zoning features result: X is None=%s", X is None)
             if X is not None:
                 try:
+                    logger.info("[predict_zoning] Calling LightGBM zoning model")
                     probabilities = loader.predict_zoning_proba(X)
+                    logger.debug("[predict_zoning] Model probabilities: %s", probabilities)
                     if probabilities is not None:
                         class_idx = int(np.argmax(probabilities[0]))
                         class_label = _ZONING_CLASS_ORDER[class_idx]
@@ -384,26 +413,31 @@ class PredictionService:
                             "probabilities": prob_dict,
                         }
                         method = "primary_model"
+                        logger.info("[predict_zoning] Primary model result: suitability=%s confidence=%s", suitability, confidence)
                 except Exception as e:
-                    print(f"[prediction_service] Zoning inference failed: {e}")
+                    logger.error("[predict_zoning] Zoning inference failed: %s", e)
                     missing_features = ["primary_model_error"]
 
         if result is None:
             # Mock fallback for development or when artifacts are incomplete
+            logger.warning("[predict_zoning] Falling back to MockPredictor (method=mock)")
             result = self._mock.predict_zoning(db, crop_id, municipality_id)
             method = "mock"
             fallback_used = True
 
         latency_ms = int((time.time() - start) * 1000)
+        logger.info("[predict_zoning] Inference completed in %sms (method=%s)", latency_ms, method)
 
         # Enrich result with method info
         result["method"] = method
         result["cache_hit"] = False
 
         # Step 5: Store cache
+        logger.debug("[predict_zoning] Storing result in cache")
         self._store_cache(db, cache_key, "zoning", result, scope_key=f"{crop_id}:{municipality_id}")
 
         # Step 6: Log audit
+        logger.debug("[predict_zoning] Logging prediction run audit")
         self._log_run(
             db=db,
             prediction_type="zoning",
@@ -416,6 +450,7 @@ class PredictionService:
             missing_features=missing_features,
         )
 
+        logger.info("[predict_zoning] Returning result (suitability=%s, method=%s)", result.get("suitability"), method)
         return result
 
     def predict_calendar_batch(
@@ -425,30 +460,32 @@ class PredictionService:
         crop_ids: List[str],
         horizon_months: int = 12,
     ) -> Dict:
-        """Predict planting calendars for multiple crops in a municipality.
-
-        This is a placeholder that returns mock data. When yield models are
-        loaded, it will use the XGBoost/LightGBM ensemble.
-        """
+        """Predict planting calendars for multiple crops in a municipality."""
+        logger.info("[predict_calendar_batch] Starting prediction (municipality_id=%s, crops=%s, horizon=%s)", municipality_id, len(crop_ids), horizon_months)
         cache_key = _make_cache_key(
             "calendar_batch",
             municipality_id=municipality_id,
             crop_ids=sorted(crop_ids),
             horizon_months=horizon_months,
         )
+        logger.debug("[predict_calendar_batch] cache_key=%s", cache_key)
 
         cached = self._check_cache(db, cache_key)
         if cached:
+            logger.info("[predict_calendar_batch] Cache hit for municipality_id=%s", municipality_id)
             return cached
+        logger.debug("[predict_calendar_batch] Cache miss")
 
         start = time.time()
         results = []
 
         for crop_id in crop_ids:
+            logger.debug("[predict_calendar_batch] Building calendar for crop_id=%s", crop_id)
             result = self._build_calendar_crop_result(db, crop_id, municipality_id, horizon_months)
             results.append(result)
 
         latency_ms = int((time.time() - start) * 1000)
+        logger.info("[predict_calendar_batch] Calendar results built in %sms for %s crops", latency_ms, len(results))
         payload = {
             "municipality_id": municipality_id,
             "horizon_months": horizon_months,
@@ -458,11 +495,13 @@ class PredictionService:
             "llm_status": "llm_unavailable",
         }
 
+        logger.debug("[predict_calendar_batch] Storing calendar batch in cache")
         self._store_cache(
             db, cache_key, "calendar_batch", payload,
             scope_key=f"{municipality_id}:{','.join(sorted(crop_ids))}",
         )
 
+        logger.debug("[predict_calendar_batch] Logging prediction run audit")
         self._log_run(
             db=db,
             prediction_type="calendar_batch",
@@ -477,6 +516,7 @@ class PredictionService:
             method="mock",
         )
 
+        logger.info("[predict_calendar_batch] Returning payload with %s crop results", len(results))
         return payload
 
     def _build_calendar_crop_result(
@@ -486,7 +526,8 @@ class PredictionService:
         municipality_id: str,
         horizon_months: int,
     ) -> Dict:
-        """Build a mock calendar result for a single crop."""
+        """Build a calendar result for a single crop."""
+        logger.debug("[_build_calendar_crop_result] Building calendar (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
         from app.services.crop_catalog import CropCatalog
         from app.services.municipality_catalog import MunicipalityCatalog
         from app.models import Municipality, MunicipalityClimateForecast
@@ -497,6 +538,7 @@ class PredictionService:
         crop = crop_catalog.get_crop_model_by_id(db, crop_id)
         municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
         if not crop or not municipality:
+            logger.warning("[_build_calendar_crop_result] Crop or municipality not found (crop_id=%s, municipality_id=%s)", crop_id, municipality_id)
             return {
                 "crop_id": crop_id,
                 "crop_name": crop_id,
@@ -512,12 +554,14 @@ class PredictionService:
         # Build monthly forecasts from stored data or mock
         today = _utcnow().date()
         monthly_forecasts = []
+        logger.debug("[_build_calendar_crop_result] Building %s monthly forecasts", horizon_months)
 
         for i in range(horizon_months):
             month = ((today.month + i - 1) % 12) + 1
             year = today.year + ((today.month + i - 1) // 12)
 
             # Try to get stored forecast data
+            logger.debug("[_build_calendar_crop_result] Querying climate forecast records for month=%s/%s", month, year)
             records = (
                 db.query(MunicipalityClimateForecast)
                 .filter(MunicipalityClimateForecast.municipality_dane_code == municipality_id)
@@ -531,12 +575,14 @@ class PredictionService:
                 avg_precip = sum(r.precipitation for r in records if r.precipitation is not None) / max(1, len(records))
                 avg_humidity = sum(r.humidity for r in records if r.humidity) / max(1, len(records))
                 climate_source = "open_meteo_forecast"
+                logger.debug("[_build_calendar_crop_result] Found %s forecast records for month=%s/%s", len(records), month, year)
             else:
                 # No forecast and no hardcoded climatology: report missing data.
                 avg_temp = None
                 avg_precip = None
                 avg_humidity = None
                 climate_source = "not_available"
+                logger.debug("[_build_calendar_crop_result] No forecast records for month=%s/%s", month, year)
 
             monthly_forecasts.append({
                 "month": month,
@@ -553,14 +599,18 @@ class PredictionService:
         ]
 
         # Try real yield ensemble first; fall back to mock if artifacts are not ready
+        logger.info("[_build_calendar_crop_result] Calling yield ensemble for crop_id=%s", crop_id)
         yield_result = _predict_yield_with_ensemble(db, crop_id, municipality.dane_code)
+        logger.debug("[_build_calendar_crop_result] Yield result: %s", yield_result)
 
         # Build real calendar info from EVA/FAO when available
+        logger.debug("[_build_calendar_crop_result] Loading calendar info from EVA/FAO/agronomic data")
         loader = self._get_model_loader()
         calendar_info = _get_crop_calendar_info(db, crop_id, loader)
         planting_months = calendar_info["planting_months"]
         duration_min = calendar_info["duration_days_min"]
         duration_max = calendar_info["duration_days_max"]
+        logger.debug("[_build_calendar_crop_result] Calendar info: planting_months=%s duration_min=%s duration_max=%s", planting_months, duration_min, duration_max)
 
         # Determine top 3 harvest months only when planting months and cycle
         # duration are available from the EVA/FAO datasets.
@@ -568,6 +618,7 @@ class PredictionService:
         warnings: List[str] = []
         current_year = today.year
         if planting_months and duration_min and duration_max:
+            logger.debug("[_build_calendar_crop_result] Computing harvest windows from calendar data")
             candidates = []
             for pm in planting_months:
                 # If planting month is before current month, assume next year
@@ -607,6 +658,10 @@ class PredictionService:
             warnings.append("No calendar data available from EVA/FAO for this crop; harvest windows cannot be computed.")
 
         if yield_result:
+            logger.info(
+                "[_build_calendar_crop_result] Returning calendar (crop_id=%s, method=%s, yield_prediction=%s, top_harvest=%s)",
+                crop_id, yield_result["method"], yield_result["yield_prediction"], len(top_harvest)
+            )
             return {
                 "crop_id": crop_id,
                 "crop_name": crop.name,
@@ -619,6 +674,7 @@ class PredictionService:
                 "method": yield_result["method"],
             }
 
+        logger.warning("[_build_calendar_crop_result] Yield ensemble unavailable; returning mock result for crop_id=%s", crop_id)
         warnings.append("Mock prediction - ML models not yet loaded")
         return {
             "crop_id": crop_id,

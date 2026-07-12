@@ -8,8 +8,11 @@ from sqlalchemy import delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import get_settings
+from app.logger import get_logger
 from app.models import Municipality, MunicipalityClimateForecast, ClimateSyncLog
 from app.services.open_meteo import OpenMeteoService
+
+logger = get_logger("app.services.climate_sync")
 
 
 def _utcnow() -> datetime:
@@ -42,9 +45,9 @@ class ClimateSyncService:
         municipality_limit: int | None = None,
     ) -> ClimateSyncLog:
         """Run a climate sync job synchronously."""
-        print(
-            f"[climate_sync] Starting {sync_type} sync for "
-            f"{municipality_limit or 'all'} municipalities, {days} days forecast"
+        logger.info(
+            "[run_sync] Starting %s sync for %s municipalities, %s days forecast",
+            sync_type, municipality_limit or "all", days
         )
         log = ClimateSyncLog(
             sync_type=sync_type,
@@ -58,6 +61,7 @@ class ClimateSyncService:
         db.refresh(log)
 
         try:
+            logger.debug("[run_sync] Querying database for all municipalities")
             municipalities = db.query(Municipality).order_by(Municipality.dane_code).all()
             if municipality_limit:
                 municipalities = municipalities[:municipality_limit]
@@ -66,13 +70,14 @@ class ClimateSyncService:
 
             for batch_start in range(0, len(municipalities), self.batch_size):
                 batch = municipalities[batch_start : batch_start + self.batch_size]
-                print(
-                    f"[climate_sync] Processing batch {batch_start // self.batch_size + 1} "
-                    f"({len(batch)} municipalities)"
+                logger.info(
+                    "[run_sync] Processing batch %s (%s municipalities)",
+                    batch_start // self.batch_size + 1, len(batch)
                 )
                 batch_records, failed_count = asyncio.run(self._sync_batch(batch, days))
 
                 for municipality_id, records in batch_records:
+                    logger.debug("[run_sync] Upserting %s forecast records for municipality_id=%s", len(records), municipality_id)
                     self._upsert_records(db, municipality_id, records)
                     total_records += len(records)
 
@@ -80,6 +85,7 @@ class ClimateSyncService:
                 db.commit()
 
                 if batch_start + self.batch_size < len(municipalities):
+                    logger.debug("[run_sync] Sleeping %ss between batches", self.delay_seconds)
                     time.sleep(self.delay_seconds)
 
             log.finished_at = _utcnow()
@@ -87,8 +93,10 @@ class ClimateSyncService:
             log.records_failed = total_failed
             log.status = "success" if total_failed == 0 else "partial"
             db.commit()
+            logger.info("[run_sync] Sync finished (records=%s, failed=%s, status=%s)", total_records, total_failed, log.status)
 
         except Exception as e:
+            logger.error("[run_sync] Sync failed: %s", e)
             log.finished_at = _utcnow()
             log.status = "error"
             log.error_message = str(e)
@@ -107,15 +115,17 @@ class ClimateSyncService:
         failed_count = 0
 
         for index, municipality in enumerate(municipalities):
-            print(
-                f"[climate_sync] {index + 1}/{len(municipalities)} "
-                f"{municipality.name} ({municipality.dane_code})"
+            logger.info(
+                "[_sync_batch] %s/%s %s (%s)",
+                index + 1, len(municipalities), municipality.name, municipality.dane_code
             )
             records = await self._fetch_with_retry(municipality.lat, municipality.lng, days)
 
             if records is not None:
+                logger.debug("[_sync_batch] Fetched %s records for %s", len(records), municipality.dane_code)
                 results.append((municipality.dane_code, records))
             else:
+                logger.warning("[_sync_batch] Failed to fetch forecast for %s", municipality.dane_code)
                 failed_count += 1
 
             await asyncio.sleep(self.delay_seconds)
@@ -129,10 +139,13 @@ class ClimateSyncService:
         days: int,
     ) -> List[dict] | None:
         """Fetch forecast with exponential backoff retries."""
+        logger.debug("[_fetch_with_retry] Fetching forecast (lat=%s, lng=%s, days=%s)", lat, lng, days)
         for attempt in range(self.max_retries):
             try:
+                logger.debug("[_fetch_with_retry] Open-Meteo attempt %s/%s", attempt + 1, self.max_retries)
                 return await self.weather_service.get_daily_forecast(lat, lng, days)
-            except Exception:
+            except Exception as e:
+                logger.warning("[_fetch_with_retry] Open-Meteo attempt %s failed: %s", attempt + 1, e)
                 if attempt == self.max_retries - 1:
                     return None
                 await asyncio.sleep(2**attempt)
@@ -178,6 +191,7 @@ class ClimateSyncService:
 
     def delete_old_forecasts(self, db: Session, keep_days: int = 180) -> int:
         """Delete forecasts older than keep_days to avoid unbounded table growth."""
+        logger.info("[delete_old_forecasts] Deleting forecasts older than %s days", keep_days)
         cutoff = _utcnow().date() - timedelta(days=keep_days)
         result = db.execute(
             delete(MunicipalityClimateForecast).where(
@@ -185,6 +199,7 @@ class ClimateSyncService:
             )
         )
         db.commit()
+        logger.info("[delete_old_forecasts] Deleted %s old forecast records", result.rowcount)
         return result.rowcount
 
 

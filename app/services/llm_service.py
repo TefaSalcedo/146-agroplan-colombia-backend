@@ -13,8 +13,10 @@ from typing import Optional, Dict, Any, List
 import httpx
 
 from app.config import get_settings
+from app.logger import get_logger
 
 settings = get_settings()
+logger = get_logger("app.services.llm_service")
 
 PROMPT_SCHEMA_VERSION = "1.0"
 
@@ -246,9 +248,11 @@ class LLMService:
         )
 
         pool = self._get_model_pool()
+        logger.debug("[generate_explanation] LLM pool has %s entries", len(pool))
 
         if not pool:
             latency_ms = int((time.time() - start) * 1000)
+            logger.warning("[generate_explanation] No LLM providers configured")
             return {
                 "explanation": None,
                 "llm_status": "llm_unavailable",
@@ -263,6 +267,7 @@ class LLMService:
         # Round-robin: start from the next model in the pool.
         first_selected = self._select_next_model(pool)
         if first_selected is None:
+            logger.warning("[generate_explanation] No LLM models available")
             return {
                 "explanation": None,
                 "llm_status": "llm_unavailable",
@@ -273,6 +278,8 @@ class LLMService:
                 "latency_ms": int((time.time() - start) * 1000),
                 "error": "No LLM models available",
             }
+
+        logger.info("[generate_explanation] Starting round-robin LLM calls (first=%s/%s)", first_selected["provider"], first_selected["model"])
 
         # Build a circular iterator starting from the selected model so that
         # failures continue with the next one in round-robin order.
@@ -286,20 +293,23 @@ class LLMService:
                 "base_url": entry["base_url"],
             }
             model = entry["model"]
+            logger.info("[generate_explanation] Calling LLM provider=%s model=%s", provider["provider"], model)
 
             result = self._call_provider(
                 provider, model, system_prompt, user_content
             )
 
             if result is None:
+                logger.warning("[generate_explanation] Provider %s/%s returned None", provider["provider"], model)
                 continue
 
             if "error" in result:
-                print(f"[llm] {entry['provider']}/{model} failed: {result['error']}")
+                logger.warning("[generate_explanation] Provider %s/%s failed: %s", provider["provider"], model, result["error"])
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
             explanation = result.get("content", "").strip()
+            logger.info("[generate_explanation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             if explanation:
                 return {
@@ -314,6 +324,7 @@ class LLMService:
                 }
 
         latency_ms = int((time.time() - start) * 1000)
+        logger.warning("[generate_explanation] All LLM providers failed after round-robin (latency_ms=%s)", latency_ms)
         return {
             "explanation": None,
             "llm_status": "llm_unavailable",

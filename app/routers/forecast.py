@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logger import get_logger
 from app.models import Municipality, MunicipalityClimateForecast
 from app.schemas.alerts import ForecastDayResponse
 from app.schemas.system import ErrorResponse
@@ -11,6 +12,7 @@ from app.schemas.system import ErrorResponse
 from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
+logger = get_logger("app.routers.forecast")
 
 
 @router.get(
@@ -35,12 +37,16 @@ def get_daily_forecast(
     days: int = Query(7, ge=1, le=90, description="Number of days to return (1-90)"),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] GET /forecast/daily/{municipality_id} called (municipality_id=%s, days=%s)", municipality_id, days)
+    logger.debug("[endpoint] Querying database for municipality_id=%s", municipality_id)
     municipality = db.query(Municipality).filter(Municipality.dane_code == municipality_id).first()
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
     today = datetime.now(timezone.utc).date()
     end_date = today + timedelta(days=days)
+    logger.debug("[endpoint] Querying database for forecast records from %s to %s", today, end_date)
 
     records = (
         db.query(MunicipalityClimateForecast)
@@ -50,6 +56,7 @@ def get_daily_forecast(
         .order_by(MunicipalityClimateForecast.forecast_date.asc())
         .all()
     )
+    logger.info("[endpoint] GET /forecast/daily/{municipality_id} returning %s forecast records", len(records))
 
     return [
         ForecastDayResponse(

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body, Path, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logger import get_logger
 from app.services.crop_catalog import CropCatalog
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.mock_predictor import MockPredictor
@@ -24,6 +25,7 @@ municipality_catalog = MunicipalityCatalog()
 crop_catalog = CropCatalog()
 mock_predictor = MockPredictor()
 prediction_service = PredictionService()
+logger = get_logger("app.routers.zoning")
 
 
 @router.post(
@@ -59,19 +61,27 @@ def predict_zoning(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /zoning/predict called (crop_id=%s, municipality_id=%s)", request.crop_id, request.municipality_id)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
+    logger.debug("[endpoint] Querying database for crop_id=%s", request.crop_id)
     crop = crop_catalog.get_crop_by_id(db, request.crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", request.crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
+    logger.info("[endpoint] Calling PredictionService.predict_zoning")
     result = prediction_service.predict_zoning(
         db=db,
         crop_id=request.crop_id,
         municipality_id=request.municipality_id,
     )
+    logger.info("[endpoint] POST /zoning/predict returning (suitability=%s, confidence=%s, method=%s)", result.get("suitability"), result.get("confidence"), result.get("method"))
 
     return ZoningResponse(**result)
 
@@ -104,19 +114,27 @@ def get_zoning_recommendations(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /zoning/recommendations called (municipality_id=%s, crop_ids=%s)", request.municipality_id, request.crop_ids)
+
+    logger.debug("[endpoint] Querying database for municipality_id=%s", request.municipality_id)
     municipality = municipality_catalog.get_municipality_by_id(db, request.municipality_id)
     if not municipality:
+        logger.warning("[endpoint] Municipality not found: %s", request.municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
     crop_ids = request.crop_ids
     if not crop_ids:
+        logger.debug("[endpoint] No crop_ids provided; fetching all ML-supported crops")
         ml_crops = crop_catalog.get_ml_supported_crops(db)
         crop_ids = [c.id for c in ml_crops]
+        logger.debug("[endpoint] Evaluating %s crops", len(crop_ids))
 
     results = []
     for crop_id in crop_ids:
+        logger.debug("[endpoint] Evaluating crop_id=%s for municipality_id=%s", crop_id, request.municipality_id)
         crop = crop_catalog.get_crop_model_by_id(db, crop_id)
         if not crop:
+            logger.warning("[endpoint] Crop not found, skipping: %s", crop_id)
             continue
 
         prediction = prediction_service.predict_zoning(
@@ -140,6 +158,7 @@ def get_zoning_recommendations(
         )
 
     results.sort(key=lambda x: x.confidence, reverse=True)
+    logger.info("[endpoint] POST /zoning/recommendations returning %s ranked crops", len(results))
 
     return ZoningBatchResponse(
         municipality_id=request.municipality_id,
@@ -171,18 +190,25 @@ def get_zoning_map(
     crop_id: str = Path(..., description="Crop identifier (e.g. aguacate)"),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] GET /zoning/map/{crop_id} called (crop_id=%s)", crop_id)
+
+    logger.debug("[endpoint] Querying database for crop_id=%s", crop_id)
     crop = crop_catalog.get_crop_model_by_id(db, crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
     from app.models import Municipality
 
+    logger.debug("[endpoint] Querying database for all municipalities")
     municipalities = db.query(Municipality).order_by(Municipality.dane_code).all()
+    logger.info("[endpoint] Generating zoning map for %s municipalities", len(municipalities))
 
     results = []
     primary_method = "primary_model"
 
     for muni in municipalities:
+        logger.debug("[endpoint] Predicting zoning for municipality_id=%s", muni.dane_code)
         prediction = prediction_service.predict_zoning(
             db=db,
             crop_id=crop_id,
@@ -206,6 +232,7 @@ def get_zoning_map(
             )
         )
 
+    logger.info("[endpoint] GET /zoning/map/{crop_id} returning %s results (primary_method=%s)", len(results), primary_method)
     return ZoningMapResponse(
         crop_id=crop_id,
         crop_name=crop.name,
@@ -240,11 +267,17 @@ def predict_zoning_mock_batch(
     request: ZoningMockBatchRequest,
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /zoning/mock/predict/batch called (crop_id=%s)", request.crop_id)
+
+    logger.debug("[endpoint] Querying database for crop_id=%s", request.crop_id)
     crop = crop_catalog.get_crop_by_id(db, request.crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", request.crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
+    logger.debug("[endpoint] Querying database for all municipalities")
     municipalities = municipality_catalog.get_municipalities(db)
+    logger.info("[endpoint] Calling MockPredictor.predict_zoning_batch for %s municipalities", len(municipalities))
     raw_predictions = mock_predictor.predict_zoning_batch(
         db=db,
         crop_id=request.crop_id,
@@ -252,6 +285,7 @@ def predict_zoning_mock_batch(
     )
 
     predictions = [ZoningResponse(**prediction) for prediction in raw_predictions]
+    logger.info("[endpoint] POST /zoning/mock/predict/batch returning %s predictions", len(predictions))
 
     return ZoningMockBatchResponse(
         crop_id=request.crop_id,

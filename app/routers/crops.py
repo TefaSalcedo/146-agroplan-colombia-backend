@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logger import get_logger
 from app.services.crop_catalog import CropCatalog
 from app.schemas.crop import CropResponse, CropListResponse, CropResponseLite
 from app.schemas.system import ErrorResponse
 
 router = APIRouter(prefix="/crops", tags=["crops"])
 catalog = CropCatalog()
+logger = get_logger("app.routers.crops")
 
 
 @router.get(
@@ -22,7 +24,10 @@ catalog = CropCatalog()
     ),
 )
 def get_crops(db: Session = Depends(get_db)):
+    logger.info("[endpoint] GET /crops called")
+    logger.debug("[endpoint] Querying database for all crops")
     crops = catalog.get_all_crops(db)
+    logger.info("[endpoint] GET /crops returning %s crops", len(crops))
     return CropListResponse(crops=crops, count=len(crops))
 
 
@@ -38,7 +43,11 @@ def get_crops(db: Session = Depends(get_db)):
     ),
 )
 def get_crops_lite(db: Session = Depends(get_db)):
-    return catalog.get_crops_lite(db)
+    logger.info("[endpoint] GET /crops/lite called")
+    logger.debug("[endpoint] Querying database for lite crop list")
+    crops = catalog.get_crops_lite(db)
+    logger.info("[endpoint] GET /crops/lite returning %s crops", len(crops))
+    return crops
 
 
 @router.get(
@@ -62,7 +71,11 @@ def get_crop(
     crop_id: str = Path(..., description="Crop identifier (e.g. aguacate, pina)"),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] GET /crops/{crop_id} called (crop_id=%s)", crop_id)
+    logger.debug("[endpoint] Querying database for crop_id=%s", crop_id)
     crop = catalog.get_crop_by_id(db, crop_id)
     if not crop:
+        logger.warning("[endpoint] Crop not found: %s", crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
+    logger.info("[endpoint] GET /crops/{crop_id} returning crop_id=%s", crop_id)
     return crop

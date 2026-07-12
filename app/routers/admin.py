@@ -7,6 +7,7 @@ from sqlalchemy import func, text
 
 from app.database import get_db
 from app.dependencies import verify_admin_api_key
+from app.logger import get_logger
 from app.models import (
     MunicipalityClimateForecast,
     PredictionCache,
@@ -28,6 +29,7 @@ from app.services.climate_scheduler import get_last_sync_status
 from app.services.model_loader import get_model_loader
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = get_logger("app.routers.admin")
 
 _UNAUTHORIZED_RESPONSE = {
     status.HTTP_401_UNAUTHORIZED: {
@@ -58,6 +60,8 @@ _ADMIN_ERROR_RESPONSES = {**_UNAUTHORIZED_RESPONSE, **_FORBIDDEN_RESPONSE}
     ),
 )
 def climate_sync_status(db: Session = Depends(get_db)):
+    logger.info("[endpoint] GET /admin/climate-sync/status called")
+    logger.debug("[endpoint] Querying database for climate sync status")
     last_sync = get_last_sync_status(db)
 
     forecast_count = db.query(MunicipalityClimateForecast).count()
@@ -66,6 +70,7 @@ def climate_sync_status(db: Session = Depends(get_db)):
         .distinct()
         .count()
     )
+    logger.info("[endpoint] GET /admin/climate-sync/status returning (records=%s, municipalities=%s)", forecast_count, distinct_municipalities)
 
     return {
         "last_sync": last_sync,
@@ -88,9 +93,14 @@ def climate_sync_status(db: Session = Depends(get_db)):
     dependencies=[Depends(verify_admin_api_key)],
 )
 def model_status(db: Session = Depends(get_db)):
+    logger.info("[endpoint] GET /admin/models/status called")
+    logger.debug("[endpoint] Checking model loader status")
     loader = get_model_loader()
+    status = loader.get_status()
+    logger.debug("[endpoint] Model loader status: %s", status)
 
     # Get active releases from DB
+    logger.debug("[endpoint] Querying database for active model releases")
     releases = db.query(ModelRelease).filter(ModelRelease.is_active == True).all()
     zoning_releases = [
         ModelReleaseResponse(
@@ -123,6 +133,12 @@ def model_status(db: Session = Depends(get_db)):
         for r in releases if r.model_type == "yield"
     ]
 
+    logger.info(
+        "[endpoint] GET /admin/models/status returning (models_loaded=%s, profiles_loaded=%s, golden_vectors_passed=%s)",
+        loader.is_zoning_model_loaded(),
+        loader.is_profiles_loaded(),
+        loader.is_golden_vectors_passed(),
+    )
     return ModelStatusResponse(
         models_loaded=loader.is_zoning_model_loaded(),
         zoning_models=zoning_releases,
@@ -146,6 +162,8 @@ def model_status(db: Session = Depends(get_db)):
     dependencies=[Depends(verify_admin_api_key)],
 )
 def cache_stats(db: Session = Depends(get_db)):
+    logger.info("[endpoint] GET /admin/cache/stats called")
+    logger.debug("[endpoint] Querying database for cache statistics")
     now = datetime.now(timezone.utc)
 
     total = db.query(PredictionCache).count()
@@ -160,6 +178,7 @@ def cache_stats(db: Session = Depends(get_db)):
     )
     by_type = {row[0]: row[1] for row in by_type_rows}
 
+    logger.info("[endpoint] GET /admin/cache/stats returning (total=%s, active=%s, expired=%s)", total, active, expired)
     return CacheStatsResponse(
         total_entries=total,
         active_entries=active,
@@ -198,6 +217,7 @@ def invalidate_cache(
     ),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] POST /admin/cache/invalidate called (prediction_type=%s, scope_key=%s)", request.prediction_type, request.scope_key)
     query = db.query(PredictionCache)
 
     if request.prediction_type:
@@ -207,6 +227,7 @@ def invalidate_cache(
 
     count = query.delete()
     db.commit()
+    logger.info("[endpoint] POST /admin/cache/invalidate invalidated %s entries", count)
 
     return CacheInvalidateResponse(invalidated=count)
 
@@ -228,12 +249,15 @@ def recent_prediction_runs(
     limit: int = Query(20, ge=1, le=100, description="Maximum number of audit entries to return"),
     db: Session = Depends(get_db),
 ):
+    logger.info("[endpoint] GET /admin/audit/recent called (limit=%s)", limit)
+    logger.debug("[endpoint] Querying database for recent prediction runs")
     runs = (
         db.query(PredictionRun)
         .order_by(PredictionRun.created_at.desc())
         .limit(limit)
         .all()
     )
+    logger.info("[endpoint] GET /admin/audit/recent returning %s runs", len(runs))
 
     return [
         PredictionRunResponse(

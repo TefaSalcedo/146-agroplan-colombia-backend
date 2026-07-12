@@ -17,8 +17,10 @@ import joblib
 import numpy as np
 
 from app.config import get_settings
+from app.logger import get_logger
 
 settings = get_settings()
+logger = get_logger("app.services.model_loader")
 
 
 # Ordinal mapping used by the zoning LightGBM model.
@@ -66,7 +68,7 @@ def _download_hf_files(
     try:
         from huggingface_hub import hf_hub_download
     except ImportError:
-        print("[model_loader] huggingface_hub not installed; cannot download from HF")
+        logger.error("[model_loader] huggingface_hub not installed; cannot download from HF")
         return False
 
     if not repo_id or not filenames:
@@ -77,10 +79,10 @@ def _download_hf_files(
     # Only download what is actually missing
     to_download = _missing_files(local_dir, filenames)
     if not to_download:
-        print(f"[model_loader] All requested files already cached in {local_dir}")
+        logger.info(f"[model_loader] All requested files already cached in {local_dir}")
         return True
 
-    print(f"[model_loader] Downloading {len(to_download)} missing file(s) from {repo_id}")
+    logger.info(f"[model_loader] Downloading {len(to_download)} missing file(s) from {repo_id}")
     try:
         for filename in to_download:
             hf_hub_download(
@@ -92,10 +94,10 @@ def _download_hf_files(
                 local_dir_use_symlinks=False,
                 resume_download=True,
             )
-        print(f"[model_loader] Downloaded missing files from {repo_id} to {local_dir}")
+        logger.info(f"[model_loader] Downloaded missing files from {repo_id} to {local_dir}")
         return True
     except Exception as e:
-        print(f"[model_loader] Failed to download files from {repo_id}: {e}")
+        logger.info(f"[model_loader] Failed to download files from {repo_id}: {e}")
         return False
 
 
@@ -193,11 +195,13 @@ class ModelLoader:
         models_dir.mkdir(parents=True, exist_ok=True)
 
         download_mode = getattr(settings, "hf_download_mode", "mvp").lower()
+        logger.info("[model_loader] Starting _load_models (download_mode=%s)", download_mode)
 
         try:
             # Download from HF if repos are configured. This is best-effort:
             # failures are logged and the loader continues with local files/mock.
             if download_mode != "none" and settings.hf_model_repo_zoning:
+                logger.info("[model_loader] Downloading zoning artifacts from HF repo=%s", settings.hf_model_repo_zoning)
                 if download_mode == "all":
                     from huggingface_hub import snapshot_download
 
@@ -242,21 +246,25 @@ class ModelLoader:
                     )
 
             # Try to load zoning model
+            logger.info("[model_loader] Loading zoning model into memory")
             self._load_zoning_model(models_dir)
 
             # Try to load yield models
+            logger.info("[model_loader] Loading yield models into memory")
             self._load_yield_models(models_dir)
 
             # Try to load reference profiles
+            logger.info("[model_loader] Loading reference profiles")
             self._load_profiles(models_dir)
 
             # Run golden vectors if models are loaded
             if self.is_zoning_model_loaded():
+                logger.info("[model_loader] Running golden vector validation")
                 self._run_golden_vectors()
 
         except Exception as e:
             self._load_error = str(e)
-            print(f"[model_loader] Error loading models: {e}")
+            logger.error("[model_loader] Error loading models: %s", e)
 
     def _load_zoning_model(self, models_dir: Path):
         """Load the zoning LightGBM model and its preprocessor."""
@@ -284,7 +292,7 @@ class ModelLoader:
         ])
 
         if not model_file:
-            print("[model_loader] Zoning model not found")
+            logger.info("[model_loader] Zoning model not found")
             return
 
         # Verify SHA-256 if manifest exists
@@ -300,17 +308,17 @@ class ModelLoader:
                     )
 
         self.zoning_model = joblib.load(str(model_file))
-        print(f"[model_loader] Loaded zoning model: {type(self.zoning_model).__name__}")
+        logger.info(f"[model_loader] Loaded zoning model: {type(self.zoning_model).__name__}")
 
         if preprocessor_file.exists():
             self.zoning_preprocessor = joblib.load(str(preprocessor_file))
-            print("[model_loader] Loaded zoning preprocessor")
+            logger.info("[model_loader] Loaded zoning preprocessor")
 
         if schema_file.exists():
             with open(schema_file) as f:
                 self.zoning_feature_schema = json.load(f)
             n_features = self.zoning_feature_schema.get("n_features", "unknown")
-            print(f"[model_loader] Loaded zoning feature schema: {n_features} features")
+            logger.info(f"[model_loader] Loaded zoning feature schema: {n_features} features")
 
     def _load_yield_models(self, models_dir: Path):
         """Load the yield XGBoost and LightGBM models and ensemble weights."""
@@ -339,22 +347,22 @@ class ModelLoader:
 
         if xgb_file:
             self.yield_xgb_model = joblib.load(str(xgb_file))
-            print(f"[model_loader] Loaded yield XGBoost model: {type(self.yield_xgb_model).__name__}")
+            logger.info(f"[model_loader] Loaded yield XGBoost model: {type(self.yield_xgb_model).__name__}")
 
         if lgbm_file:
             self.yield_lgbm_model = joblib.load(str(lgbm_file))
-            print(f"[model_loader] Loaded yield LightGBM model: {type(self.yield_lgbm_model).__name__}")
+            logger.info(f"[model_loader] Loaded yield LightGBM model: {type(self.yield_lgbm_model).__name__}")
 
         if preprocessor_file.exists():
             self.yield_preprocessor = joblib.load(str(preprocessor_file))
-            print("[model_loader] Loaded yield preprocessor")
+            logger.info("[model_loader] Loaded yield preprocessor")
 
         if schema_file.exists():
             with open(schema_file) as f:
                 self.yield_feature_schema = json.load(f)
             xgb_n = len(self.yield_feature_schema.get("xgboost", {}).get("feature_names", []))
             lgbm_n = len(self.yield_feature_schema.get("lightgbm", {}).get("feature_names", []))
-            print(f"[model_loader] Loaded yield feature schema: XGB={xgb_n}, LGBM={lgbm_n} features")
+            logger.info(f"[model_loader] Loaded yield feature schema: XGB={xgb_n}, LGBM={lgbm_n} features")
 
         if weights_file.exists():
             with open(weights_file) as f:
@@ -365,7 +373,7 @@ class ModelLoader:
             self.yield_lgbm_weight = float(
                 weights.get("weight_lgb") or weights.get("lightgbm") or 0.35
             )
-            print(f"[model_loader] Loaded yield ensemble weights: XGB={self.yield_xgb_weight}, LGBM={self.yield_lgbm_weight}")
+            logger.info(f"[model_loader] Loaded yield ensemble weights: XGB={self.yield_xgb_weight}, LGBM={self.yield_lgbm_weight}")
         else:
             self.yield_xgb_weight = 0.65
             self.yield_lgbm_weight = 0.35
@@ -385,9 +393,9 @@ class ModelLoader:
         if zoning_reference_file:
             try:
                 self.knn_fallback = pd.read_parquet(str(zoning_reference_file))
-                print(f"[model_loader] Loaded zoning reference profiles: {len(self.knn_fallback)} rows")
+                logger.info(f"[model_loader] Loaded zoning reference profiles: {len(self.knn_fallback)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load zoning reference profiles: {e}")
+                logger.info(f"[model_loader] Could not load zoning reference profiles: {e}")
 
         municipality_profiles_file = _find_first_file([
             zoning_models_dir / "municipality_profiles.parquet",
@@ -396,9 +404,9 @@ class ModelLoader:
         if municipality_profiles_file:
             try:
                 self.municipality_profiles = pd.read_parquet(str(municipality_profiles_file))
-                print(f"[model_loader] Loaded municipality profiles: {len(self.municipality_profiles)} rows")
+                logger.info(f"[model_loader] Loaded municipality profiles: {len(self.municipality_profiles)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load municipality profiles: {e}")
+                logger.info(f"[model_loader] Could not load municipality profiles: {e}")
 
         yield_profiles_file = _find_first_file([
             yield_models_dir / "yield_profiles.parquet",
@@ -407,9 +415,9 @@ class ModelLoader:
         if yield_profiles_file:
             try:
                 self.yield_profiles = pd.read_parquet(str(yield_profiles_file))
-                print(f"[model_loader] Loaded yield profiles: {len(self.yield_profiles)} rows")
+                logger.info(f"[model_loader] Loaded yield profiles: {len(self.yield_profiles)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load yield profiles: {e}")
+                logger.info(f"[model_loader] Could not load yield profiles: {e}")
 
         crop_features_file = _find_first_file([
             yield_data_dir / "crop_features_integrated.csv",
@@ -418,9 +426,9 @@ class ModelLoader:
         if crop_features_file:
             try:
                 self.crop_features = pd.read_csv(str(crop_features_file))
-                print(f"[model_loader] Loaded crop features: {len(self.crop_features)} rows")
+                logger.info(f"[model_loader] Loaded crop features: {len(self.crop_features)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load crop features: {e}")
+                logger.info(f"[model_loader] Could not load crop features: {e}")
 
         calendar_file = _find_first_file([
             yield_data_dir / "calendar_for_eva.csv",
@@ -429,9 +437,9 @@ class ModelLoader:
         if calendar_file:
             try:
                 self.calendar_for_eva = pd.read_csv(str(calendar_file))
-                print(f"[model_loader] Loaded EVA calendar: {len(self.calendar_for_eva)} rows")
+                logger.info(f"[model_loader] Loaded EVA calendar: {len(self.calendar_for_eva)} rows")
             except Exception as e:
-                print(f"[model_loader] Could not load EVA calendar: {e}")
+                logger.info(f"[model_loader] Could not load EVA calendar: {e}")
 
         if any(
             x is not None
@@ -452,7 +460,7 @@ class ModelLoader:
             Path(settings.ml_models_path) / "zoning" / "golden_vectors.json",
         ])
         if not golden_file:
-            print("[model_loader] No golden vectors file found, skipping validation")
+            logger.info("[model_loader] No golden vectors file found, skipping validation")
             return
 
         try:
@@ -463,7 +471,7 @@ class ModelLoader:
             vectors = golden.get("vectors") if isinstance(golden, dict) else golden
             if not vectors:
                 self._golden_vectors_passed = True
-                print("[model_loader] No golden vectors to validate")
+                logger.info("[model_loader] No golden vectors to validate")
                 return
 
             passed = 0
@@ -491,7 +499,7 @@ class ModelLoader:
             )
         except Exception as e:
             self._golden_vectors_passed = False
-            print(f"[model_loader] Golden vector validation failed: {e}")
+            logger.info(f"[model_loader] Golden vector validation failed: {e}")
 
     def is_zoning_model_loaded(self) -> bool:
         """Check if zoning model is loaded."""
@@ -557,7 +565,9 @@ class ModelLoader:
         Returns None if the model is not loaded.
         """
         if not self.is_zoning_model_loaded():
+            logger.warning("[model_loader] Zoning model not loaded; cannot predict_proba")
             return None
+        logger.debug("[model_loader] Running zoning model predict_proba")
         return self.zoning_model.predict_proba(X)
 
     def get_status(self) -> Dict[str, Any]:
