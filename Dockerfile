@@ -23,6 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /install /usr/local
 
+WORKDIR /app
+
+# Create models directory with writable permissions so the container can
+# download and cache Hugging Face artifacts at runtime when HF_TOKEN is provided.
+RUN mkdir -p /app/models && chmod 777 /app/models
+
 COPY . .
 
 EXPOSE 8000

@@ -20,6 +20,48 @@ from app.services.mock_predictor import MockPredictor
 settings = get_settings()
 
 
+def _build_yield_features(db: Session, crop_id: str, municipality_id: str) -> Optional[Any]:
+    """Build the feature vector expected by the yield ensemble.
+
+    This is a placeholder that will be fully implemented once the yield
+    preprocessor and municipality/yield profiles are available. It currently
+    returns None so the service falls back to mock predictions.
+    """
+    # TODO: implement when yield_profiles.parquet and preprocessor.pkl are ready
+    return None
+
+
+def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str) -> Optional[Dict]:
+    """Run the XGBoost 0.65 / LightGBM 0.35 yield ensemble if artifacts are ready.
+
+    Returns None if any required artifact is missing so the caller can fall
+    back to mock predictions.
+    """
+    try:
+        from app.services.model_loader import get_model_loader
+
+        loader = get_model_loader()
+        if not loader.is_yield_model_loaded():
+            return None
+
+        X = _build_yield_features(db, crop_id, municipality_id)
+        if X is None:
+            return None
+
+        prediction = loader.predict_yield_ensemble(X)
+        if prediction is None:
+            return None
+
+        return {
+            "yield_prediction": prediction,
+            "yield_model_version": "yield-ensemble-v1",
+            "yield_confidence": "medium" if loader.is_yield_model_loaded() else "low",
+            "method": "yield_ensemble",
+        }
+    except Exception:
+        return None
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -276,12 +318,15 @@ class PredictionService:
     ) -> Dict:
         """Build a mock calendar result for a single crop."""
         from app.services.crop_catalog import CropCatalog
-        from app.models import MunicipalityClimateForecast
+        from app.services.municipality_catalog import MunicipalityCatalog
+        from app.models import Municipality, MunicipalityClimateForecast
         from datetime import timedelta
 
         crop_catalog = CropCatalog()
+        municipality_catalog = MunicipalityCatalog()
         crop = crop_catalog.get_crop_model_by_id(db, crop_id)
-        if not crop:
+        municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
+        if not crop or not municipality:
             return {
                 "crop_id": crop_id,
                 "crop_name": crop_id,
@@ -336,6 +381,9 @@ class PredictionService:
             "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
         ]
 
+        # Try real yield ensemble first; fall back to mock if artifacts are not ready
+        yield_result = _predict_yield_with_ensemble(db, crop_id, municipality.dane_code)
+
         # Mock top 3 harvest months (future: use yield model + EVA/FAO)
         top_harvest = []
         for i in range(min(3, horizon_months)):
@@ -350,6 +398,19 @@ class PredictionService:
                 "duration_days_min": crop.days_to_harvest,
                 "duration_days_max": crop.days_to_harvest,
             })
+
+        if yield_result:
+            return {
+                "crop_id": crop_id,
+                "crop_name": crop.name,
+                "yield_prediction": yield_result["yield_prediction"],
+                "yield_model_version": yield_result["yield_model_version"],
+                "yield_confidence": yield_result["yield_confidence"],
+                "top_harvest_months": top_harvest,
+                "monthly_forecasts": monthly_forecasts,
+                "warnings": [],
+                "method": yield_result["method"],
+            }
 
         return {
             "crop_id": crop_id,

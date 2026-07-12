@@ -431,12 +431,20 @@ Configura en `.env`:
 
 ```bash
 HF_TOKEN=hf_...
-HF_MODEL_REPO_ZONING=agroplan/zoning-models
-HF_MODEL_REPO_YIELD=agroplan/yield-models
-HF_MODEL_REVISION=abc1234
+HF_MODEL_REPO_ZONING=SRBOTOM/agroplan-zonificacion
+HF_MODEL_REPO_YIELD=SRBOTOM/agroplan-rendimiento
+HF_MODEL_REVISION=main
 ```
 
-El build del contenedor puede descargar los artefactos si se integra `huggingface-cli` en el `Dockerfile`. Actualmente `model_loader.py` los carga desde `ML_MODELS_PATH` cuando existen.
+Al iniciar, `app/services/model_loader.py` descarga automáticamente todos los archivos de los repos configurados a `./models/zoning/` y `./models/yield/`. El token solo necesita permiso de lectura. Si un repo es privado, el token es obligatorio; si es público, puedes omitirlo.
+
+El ensamble de rendimiento usa XGBoost con peso 0.65 y LightGBM con peso 0.35. Estos pesos pueden sobrescribirse creando `models/yield/weights.json`:
+
+```json
+{"xgboost": 0.65, "lightgbm": 0.35}
+```
+
+> **Nota:** los modelos publicados en HF son los estimadores finales. Para inferencia real también se requieren `preprocessor.pkl`, `feature_schema.json` y los perfiles Parquet (`municipality_profiles.parquet`, `yield_profiles.parquet`, `zoning_reference.parquet`). Mientras falten, el backend funciona con mocks y el campo `method` indica `mock`.
 
 ### Manifiesto de modelos
 

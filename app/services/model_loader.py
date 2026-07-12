@@ -11,9 +11,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import joblib
+import numpy as np
 
 from app.config import get_settings
 
@@ -29,6 +30,40 @@ def _sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
+def _download_hf_repo(repo_id: str, local_dir: Path, revision: str = "main", token: str = "") -> bool:
+    """Download all files from a Hugging Face model repo into a local directory.
+
+    Returns True if files were downloaded or already present, False on failure.
+    Failures are logged but not raised so the loader can fall back to local files
+    or mock predictions.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        print("[model_loader] huggingface_hub not installed; cannot download from HF")
+        return False
+
+    if not repo_id:
+        return False
+
+    try:
+        print(f"[model_loader] Downloading HF repo {repo_id} (rev {revision}) to {local_dir}")
+        local_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=repo_id,
+            revision=revision,
+            token=token or None,
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
+            resume_download=True,
+        )
+        print(f"[model_loader] Downloaded HF repo {repo_id} to {local_dir}")
+        return True
+    except Exception as e:
+        print(f"[model_loader] Failed to download HF repo {repo_id}: {e}")
+        return False
+
+
 class ModelLoader:
     """Loads and manages ML model artifacts from Hugging Face."""
 
@@ -41,6 +76,8 @@ class ModelLoader:
         self.yield_lgbm_model = None
         self.yield_preprocessor = None
         self.yield_feature_schema: Optional[Dict] = None
+        self.yield_xgb_weight: float = 0.65
+        self.yield_lgbm_weight: float = 0.35
 
         self.knn_fallback = None
 
@@ -56,6 +93,23 @@ class ModelLoader:
         models_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Download from HF if repos are configured. This is best-effort:
+            # failures are logged and the loader continues with local files/mock.
+            if settings.hf_model_repo_zoning:
+                _download_hf_repo(
+                    settings.hf_model_repo_zoning,
+                    models_dir / "zoning",
+                    revision=settings.hf_model_revision,
+                    token=settings.hf_token,
+                )
+            if settings.hf_model_repo_yield:
+                _download_hf_repo(
+                    settings.hf_model_repo_yield,
+                    models_dir / "yield",
+                    revision=settings.hf_model_revision,
+                    token=settings.hf_token,
+                )
+
             # Try to load zoning model
             self._load_zoning_model(models_dir)
 
@@ -110,18 +164,25 @@ class ModelLoader:
             print(f"[model_loader] Loaded zoning feature schema: {len(self.zoning_feature_schema)} features")
 
     def _load_yield_models(self, models_dir: Path):
-        """Load the yield XGBoost and LightGBM models."""
+        """Load the yield XGBoost and LightGBM models and ensemble weights."""
         yield_path = models_dir / "yield"
-        xgb_file = yield_path / "xgb_model.pkl"
-        lgbm_file = yield_path / "lgbm_model.pkl"
+
+        # Support both cleaned HF names and canonical bundle names
+        xgb_candidates = [yield_path / "xgb_model.pkl", yield_path / "xgboost_top20_cleaned.pkl"]
+        lgbm_candidates = [yield_path / "lgbm_model.pkl", yield_path / "lightgbm_top20_cleaned.pkl"]
+
+        xgb_file = next((p for p in xgb_candidates if p.exists()), None)
+        lgbm_file = next((p for p in lgbm_candidates if p.exists()), None)
+
         preprocessor_file = yield_path / "preprocessor.pkl"
         schema_file = yield_path / "feature_schema.json"
+        weights_file = yield_path / "weights.json"
 
-        if xgb_file.exists():
+        if xgb_file:
             self.yield_xgb_model = joblib.load(str(xgb_file))
             print(f"[model_loader] Loaded yield XGBoost model: {type(self.yield_xgb_model).__name__}")
 
-        if lgbm_file.exists():
+        if lgbm_file:
             self.yield_lgbm_model = joblib.load(str(lgbm_file))
             print(f"[model_loader] Loaded yield LightGBM model: {type(self.yield_lgbm_model).__name__}")
 
@@ -133,6 +194,16 @@ class ModelLoader:
             with open(schema_file) as f:
                 self.yield_feature_schema = json.load(f)
             print(f"[model_loader] Loaded yield feature schema: {len(self.yield_feature_schema)} features")
+
+        if weights_file.exists():
+            with open(weights_file) as f:
+                weights = json.load(f)
+            self.yield_xgb_weight = float(weights.get("xgboost", 0.65))
+            self.yield_lgbm_weight = float(weights.get("lightgbm", 0.35))
+            print(f"[model_loader] Loaded yield ensemble weights: XGB={self.yield_xgb_weight}, LGBM={self.yield_lgbm_weight}")
+        else:
+            self.yield_xgb_weight = 0.65
+            self.yield_lgbm_weight = 0.35
 
     def _load_profiles(self, models_dir: Path):
         """Load reference Parquet profiles for k-NN fallback."""
@@ -192,6 +263,52 @@ class ModelLoader:
 
     def get_load_error(self) -> Optional[str]:
         return self._load_error
+
+    def predict_yield_ensemble(self, X: Any) -> Optional[float]:
+        """Return ensemble prediction from XGBoost and LightGBM yield models.
+
+        Expects X to be a DataFrame or array aligned with the trained features.
+        Returns None if the models are not loaded.
+        """
+        if not self.is_yield_model_loaded():
+            return None
+
+        xgb_pred = None
+        lgbm_pred = None
+
+        if self.yield_xgb_model is not None:
+            xgb_pred = float(self.yield_xgb_model.predict(X)[0])
+        if self.yield_lgbm_model is not None:
+            lgbm_pred = float(self.yield_lgbm_model.predict(X)[0])
+
+        if xgb_pred is not None and lgbm_pred is not None:
+            return float(
+                self.yield_xgb_weight * xgb_pred + self.yield_lgbm_weight * lgbm_pred
+            )
+        if xgb_pred is not None:
+            return xgb_pred
+        if lgbm_pred is not None:
+            return lgbm_pred
+        return None
+
+    def predict_zoning(self, X: Any) -> Optional[Any]:
+        """Return class prediction and probabilities from the zoning LightGBM model.
+
+        Expects X to be a DataFrame or array aligned with the trained features.
+        Returns None if the model is not loaded.
+        """
+        if not self.is_zoning_model_loaded():
+            return None
+        return self.zoning_model.predict(X)
+
+    def predict_zoning_proba(self, X: Any) -> Optional[np.ndarray]:
+        """Return class probabilities from the zoning LightGBM model.
+
+        Returns None if the model is not loaded.
+        """
+        if not self.is_zoning_model_loaded():
+            return None
+        return self.zoning_model.predict_proba(X)
 
     def get_status(self) -> Dict[str, Any]:
         """Return detailed status of all model components."""
