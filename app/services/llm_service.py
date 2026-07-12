@@ -210,26 +210,47 @@ class LLMService:
             return {"error": f"unexpected: {e}"}
 
     def _try_repair_json(self, content: str) -> Optional[Dict]:
-        """Attempt one round of JSON repair."""
+        """Attempt one round of JSON repair.
+
+        Tries direct parsing first, then extracts JSON from markdown code
+        blocks. Returns None when no valid JSON can be recovered.
+        """
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            if "```json" in content:
-                start = content.index("```json") + 7
-                end = content.index("```", start)
-                try:
-                    return json.loads(content[start:end].strip())
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            if "```" in content:
-                start = content.index("```") + 3
-                end = content.index("```", start)
-                try:
-                    return json.loads(content[start:end].strip())
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return None
+            pass
+
+        # Try to extract JSON from markdown code blocks
+        for marker in ("```json", "```"):
+            start = content.find(marker)
+            if start == -1:
+                continue
+            block_start = start + len(marker)
+            end = content.find("```", block_start)
+            if end == -1:
+                continue
+            candidate = content[block_start:end].strip()
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Last resort: try to find the first `{`..`}` or `[`..`]` block that
+        # parses as JSON. This catches models that wrap JSON in explanatory text.
+        for start_char, end_char in (("{", "}"), ("[", "]")):
+            start = content.find(start_char)
+            if start == -1:
+                continue
+            end = content.rfind(end_char)
+            if end == -1 or end <= start:
+                continue
+            candidate = content[start:end + 1].strip()
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        return None
 
     def generate_explanation(
         self,
