@@ -383,9 +383,13 @@ class LLMService:
             "REGLAS DE CONTENIDO:\n"
             "1. Di si conviene sembrar este cultivo en este municipio.\n"
             "2. Menciona en qué meses plantar.\n"
-            "3. Da cuidados básicos de tierra y riego.\n"
-            "4. Menciona advertencias si el clima o la tierra no son adecuados.\n"
-            "5. No inventes datos; usa solo la información proporcionada."
+            "3. Para el tiempo de cosecha usa el campo 'days_to_harvest_text'. "
+            "Si 'is_perennial' es true, menciona también el 'establishment_period_text' como el tiempo "
+            "que tarda el árbol en empezar a producir de forma estable.\n"
+            "4. Para describir la tierra usa el campo 'soil_type_simple', no 'soil_type'.\n"
+            "5. Da cuidados básicos de tierra y riego.\n"
+            "6. Menciona advertencias si el clima o la tierra no son adecuados.\n"
+            "7. No inventes datos; usa solo la información proporcionada."
         )
 
         user_content = json.dumps(
@@ -508,7 +512,11 @@ class LLMService:
             + "\n\n"
             "REGLAS DE CONTENIDO:\n"
             "1. No inventes datos. Usa únicamente la información del cultivo proporcionada.\n"
-            "2. La guía debe tener un resumen corto y varias secciones con título y contenido.\n\n"
+            "2. Usa 'soil_type_simple' para describir la tierra, no 'soil_type'.\n"
+            "3. Usa 'days_to_harvest_text' para el tiempo de cosecha. Si 'is_perennial' es true, "
+            "usa 'establishment_period_text' para explicar cuánto tarda el árbol en empezar a producir.\n"
+            "4. La guía debe tener un resumen corto y varias secciones con título y contenido.\n"
+            "5. Si hay tips del cultivo, incorpóralos de forma natural en las secciones.\n\n"
             "ESTRUCTURA OBLIGATORIA DEL JSON:\n"
             "{\n"
             '  "summary": "resumen amigable de 2 o 3 frases",\n'
