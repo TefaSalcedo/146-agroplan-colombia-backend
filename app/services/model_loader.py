@@ -135,7 +135,6 @@ def _resolve_zoning_files(local_dir: Path) -> List[str]:
     """Return the minimal set of zoning files needed for the MVP backend."""
     return [
         "lightgbm_tuned_multi_random_holdout.pkl",
-        "lightgbm_tuned_multi_random_holdout_explainability_report.json",
         "climate_analog_recommender.pkl",
         # Bundle artifacts
         "zoning/preprocessor.pkl",

@@ -1,0 +1,86 @@
+# -----------------------------------------------------------------------------
+# Production Dockerfile for AgroPlan Colombia Backend
+# -----------------------------------------------------------------------------
+# Multi-stage build focused on the smallest possible runtime image.
+# - Builder stage compiles/installs Python deps into a virtual environment.
+# - Runtime stage copies only the venv and the application code.
+# - Application runs as a non-root user.
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Stage 1: Builder
+# -----------------------------------------------------------------------------
+FROM python:3.14-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies. These are only needed to compile wheels and are NOT
+# copied into the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Create a virtual environment. This keeps dependencies isolated and makes it
+# trivial to copy only /opt/venv into the runtime stage.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install runtime dependencies. Upgrade pip first to avoid stale resolver issues.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    # XGBoost pulls nvidia-nccl-cu12 for GPU support, but this container runs on
+    # CPU only. Removing it saves ~300 MB without affecting model inference.
+    pip uninstall -y nvidia-nccl-cu12 nvidia-nccl-cu11 2>/dev/null || true
+
+# Precompile Python bytecode so container startup is faster. This adds a small
+# amount of size but removes import overhead at runtime.
+RUN python -m compileall /opt/venv/lib/python*/site-packages 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime
+# -----------------------------------------------------------------------------
+FROM python:3.14-slim AS runtime
+
+# Install only runtime shared libraries. No compilers, headers or build tools.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    apt-get clean
+
+# Create a non-root user for security. uid 1000 is a common convention.
+RUN groupadd appgroup && useradd -g appgroup -u 1000 appuser
+
+WORKDIR /app
+
+# Copy the pre-built virtual environment from the builder stage.
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1
+
+# Create the models directory where Hugging Face artifacts are downloaded at
+# runtime. It is owned by appuser so the container can write without needing
+# world-writable permissions.
+RUN mkdir -p /app/models && chown -R appuser:appgroup /app
+
+# Copy only the application source code. The .dockerignore file excludes
+# .venv, models/, data/, .git, tests, docs and other build artifacts.
+COPY --chown=appuser:appgroup . .
+
+# Switch to the non-root user.
+USER appuser
+
+# Expose the FastAPI port.
+EXPOSE 8000
+
+# Simple health check so orchestrators can verify the container is ready.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" || exit 1
+
+# Run with a single worker by default. For horizontal scaling, run more replicas
+# or override the command in docker-compose.yml / k8s.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
