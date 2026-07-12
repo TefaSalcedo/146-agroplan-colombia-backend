@@ -41,20 +41,25 @@ def test_zoning_recommendations_include_climate_based(client):
 
 
 def test_zoning_map(client):
-    """Zoning map returns one result per municipality for the requested crop."""
+    """Zoning map returns medium/high municipalities for the requested crop."""
     response = client.get("/api/v1/zoning/map/aguacate")
     assert response.status_code == 200
     data = response.json()
     assert data["crop_id"] == "aguacate"
     assert data["crop_name"] == "Aguacate"
+    assert data["model_version"] == "zoning-catboost-v1"
+    assert data["method"] == "catboost_batch"
     assert data["total_municipalities"] > 0
     assert len(data["results"]) == data["total_municipalities"]
-    first = data["results"][0]
-    assert "municipality_id" in first
-    assert "municipality_name" in first
-    assert "suitability" in first
-    assert "confidence" in first
-    assert "method" in first
+    for r in data["results"]:
+        assert "municipality_id" in r
+        assert "municipality_name" in r
+        assert "suitability" in r
+        assert r["suitability"] in ("high", "medium")
+        assert "confidence" in r
+        assert "method" in r
+        assert "lat" in r
+        assert "lng" in r
 
 
 def test_zoning_map_crop_not_found(client):

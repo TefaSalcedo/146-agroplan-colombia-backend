@@ -118,10 +118,9 @@ def get_zoning_recommendations_by_municipality(
     summary="Get zoning map for a crop",
     description=(
         "Evaluates all municipalities for a crop and returns suitability scores.\n\n"
-        "Uses the primary LightGBM zoning model when artifacts are loaded; falls back to "
-        "k-NN agroclimatic analogs when critical features are missing. The full payload is "
-        "cached. Returns all municipalities; the frontend joins results with DANE geometry "
-        "for rendering."
+        "Uses the CatBoost zoning model with a single batch prediction for all "
+        "municipalities. Only medium/high suitability results are returned to reduce noise. "
+        "The frontend joins results with DANE geometry for rendering."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
@@ -142,44 +141,49 @@ def get_zoning_map(
         logger.warning("[endpoint] Crop not found: %s", crop_id)
         raise HTTPException(status_code=404, detail="Crop not found")
 
-    logger.debug("[endpoint] Querying database for all municipalities")
-    municipalities = db.query(Municipality).order_by(Municipality.dane_code).all()
-    logger.info("[endpoint] Generating zoning map for %s municipalities", len(municipalities))
+    logger.info("[endpoint] Generating batch zoning map for crop_id=%s", crop_id)
+    predictions_df = prediction_service.predict_zoning_map_batch(db, crop_id)
+
+    if predictions_df is None or predictions_df.empty:
+        logger.warning("[endpoint] No CatBatch predictions available for crop_id=%s", crop_id)
+        raise HTTPException(status_code=503, detail="Zoning map model not available")
+
+    # Build a lookup of municipality coordinates/names from the database
+    municipality_ids = [str(r) for r in predictions_df["cod_dane_m"].tolist()]
+    municipalities = {
+        str(m.dane_code): m
+        for m in db.query(Municipality).filter(Municipality.dane_code.in_(municipality_ids)).all()
+    }
 
     results = []
-    primary_method = "primary_model"
-
-    for muni in municipalities:
-        logger.debug("[endpoint] Predicting zoning for municipality_id=%s", muni.dane_code)
-        prediction = prediction_service.predict_zoning(
-            db=db,
-            crop_id=crop_id,
-            municipality_id=muni.dane_code,
-        )
-        method = prediction.get("method", "primary_model")
-        if method != "primary_model" and primary_method == "primary_model":
-            primary_method = method
-
+    for _, row in predictions_df.iterrows():
+        muni_id = str(row["cod_dane_m"])
+        muni = municipalities.get(muni_id)
+        if not muni:
+            continue
         results.append(
             ZoningMapMunicipalityResult(
-                municipality_id=muni.dane_code,
+                municipality_id=muni_id,
                 municipality_name=muni.name,
-                dane_code=muni.dane_code,
+                dane_code=muni_id,
                 lat=muni.lat,
                 lng=muni.lng,
-                suitability=prediction["suitability"],
-                confidence=prediction["confidence"],
-                method=method,
-                probabilities=prediction.get("probabilities"),
+                suitability=row["suitability"],
+                confidence=row["confidence"],
+                method=row["method"],
+                probabilities=row["probabilities"],
             )
         )
 
-    logger.info("[endpoint] GET /zoning/map/{crop_id} returning %s results (primary_method=%s)", len(results), primary_method)
+    logger.info(
+        "[endpoint] GET /zoning/map/{crop_id} returning %s medium/high results (method=catboost_batch)",
+        len(results),
+    )
     return ZoningMapResponse(
         crop_id=crop_id,
         crop_name=crop.name,
-        model_version="zoning-lightgbm-v1",
-        method=primary_method,
+        model_version="zoning-catboost-v1",
+        method="catboost_batch",
         results=results,
         total_municipalities=len(results),
     )

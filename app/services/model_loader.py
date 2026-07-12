@@ -151,10 +151,12 @@ def _resolve_zoning_files(local_dir: Path) -> List[str]:
     """Return the minimal set of zoning files needed for the MVP backend."""
     return [
         "lightgbm_tuned_multi_random_holdout.pkl",
+        "catboost_tuned_multi_spatial_holdout.pkl",
         "climate_analog_recommender.pkl",
         # Bundle artifacts
         "zoning/preprocessor.pkl",
         "zoning/feature_schema.json",
+        "zoning/catboost_feature_schema.json",
         "zoning/manifest.json",
         "zoning/golden_vectors.json",
         # Profiles
@@ -171,6 +173,10 @@ class ModelLoader:
         self.zoning_preprocessor = None
         self.zoning_feature_schema: Optional[Dict] = None
         self.climate_analog_recommender = None
+
+        self.zoning_catboost_model = None
+        self.zoning_catboost_preprocessor = None
+        self.zoning_catboost_feature_schema: Optional[Dict] = None
 
         self.yield_xgb_model = None
         self.yield_lgbm_model = None
@@ -274,11 +280,11 @@ class ModelLoader:
             logger.error("[model_loader] Error loading models: %s", e)
 
     def _load_zoning_model(self, models_dir: Path):
-        """Load the zoning LightGBM model and its preprocessor."""
+        """Load the zoning LightGBM and CatBoost models plus preprocessors."""
         zoning_path = models_dir / "zoning"
         bundle_path = zoning_path / "zoning"
 
-        # Support both HF uploaded name and canonical bundle name
+        # --- LightGBM model (used by /zoning/recommendations) ---
         model_candidates = [
             zoning_path / "lightgbm_tuned_multi_random_holdout.pkl",
             zoning_path / "model.pkl",
@@ -298,24 +304,23 @@ class ModelLoader:
             zoning_path / "manifest.json",
         ])
 
-        if not model_file:
-            logger.info("[model_loader] Zoning model not found")
-            return
+        if model_file:
+            # Verify SHA-256 if manifest exists
+            if manifest_file.exists():
+                with open(manifest_file) as f:
+                    manifest = json.load(f)
+                expected_sha = manifest.get("sha256")
+                if expected_sha:
+                    actual_sha = _sha256_file(str(model_file))
+                    if actual_sha != expected_sha:
+                        raise ValueError(
+                            f"Zoning model SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
+                        )
 
-        # Verify SHA-256 if manifest exists
-        if manifest_file.exists():
-            with open(manifest_file) as f:
-                manifest = json.load(f)
-            expected_sha = manifest.get("sha256")
-            if expected_sha:
-                actual_sha = _sha256_file(str(model_file))
-                if actual_sha != expected_sha:
-                    raise ValueError(
-                        f"Zoning model SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
-                    )
-
-        self.zoning_model = joblib.load(str(model_file))
-        logger.info(f"[model_loader] Loaded zoning model: {type(self.zoning_model).__name__}")
+            self.zoning_model = joblib.load(str(model_file))
+            logger.info(f"[model_loader] Loaded zoning model: {type(self.zoning_model).__name__}")
+        else:
+            logger.info("[model_loader] LightGBM zoning model not found")
 
         if preprocessor_file.exists():
             self.zoning_preprocessor = joblib.load(str(preprocessor_file))
@@ -326,6 +331,37 @@ class ModelLoader:
                 self.zoning_feature_schema = json.load(f)
             n_features = self.zoning_feature_schema.get("n_features", "unknown")
             logger.info(f"[model_loader] Loaded zoning feature schema: {n_features} features")
+
+        # --- CatBoost model (used by /zoning/map) ---
+        catboost_file = _find_first_file([
+            zoning_path / "catboost_tuned_multi_spatial_holdout.pkl",
+            models_dir / "catboost_tuned_multi_spatial_holdout.pkl",
+        ])
+        catboost_schema_file = _find_first_file([
+            zoning_path / "zoning" / "catboost_feature_schema.json",
+            zoning_path / "catboost_feature_schema.json",
+            bundle_path / "catboost_feature_schema.json",
+        ])
+
+        if catboost_file:
+            try:
+                import pickle
+                with open(catboost_file, "rb") as f:
+                    self.zoning_catboost_model = pickle.load(f)
+                logger.info(f"[model_loader] Loaded CatBoost zoning model: {type(self.zoning_catboost_model).__name__}")
+            except Exception as e:
+                logger.error(f"[model_loader] Could not load CatBoost zoning model: {e}")
+
+        if catboost_schema_file and catboost_schema_file.exists():
+            with open(catboost_schema_file) as f:
+                self.zoning_catboost_feature_schema = json.load(f)
+            n_features = self.zoning_catboost_feature_schema.get("n_features", "unknown")
+            logger.info(f"[model_loader] Loaded CatBoost zoning feature schema: {n_features} features")
+
+        # The same preprocessor encodes cultivo/zona_climatica for both models
+        if self.zoning_catboost_model is not None and self.zoning_preprocessor is not None:
+            self.zoning_catboost_preprocessor = self.zoning_preprocessor
+            logger.info("[model_loader] Reusing zoning preprocessor for CatBoost")
 
         # Climate analog k-NN recommender (used as fallback for unseen municipalities)
         analog_file = _find_first_file([
@@ -530,6 +566,15 @@ class ModelLoader:
         """Check if zoning model is loaded."""
         return self.zoning_model is not None
 
+    def is_zoning_catboost_loaded(self) -> bool:
+        """Check if the CatBoost zoning model and its artifacts are loaded."""
+        return (
+            self.zoning_catboost_model is not None
+            and self.zoning_catboost_preprocessor is not None
+            and self.zoning_catboost_feature_schema is not None
+            and self.municipality_profiles is not None
+        )
+
     def is_yield_model_loaded(self) -> bool:
         """Check if at least one yield model is loaded."""
         return self.yield_xgb_model is not None or self.yield_lgbm_model is not None
@@ -599,12 +644,85 @@ class ModelLoader:
         logger.debug("[model_loader] Running zoning model predict_proba")
         return self.zoning_model.predict_proba(X)
 
+    def predict_zoning_catboost_map(
+        self,
+        crop_id: str,
+    ) -> Optional[pd.DataFrame]:
+        """Return a batch prediction for all municipalities for one crop.
+
+        Returns a DataFrame with columns:
+        - cod_dane_m
+        - suitability
+        - confidence
+        - probabilities (dict)
+        - method = 'catboost_batch'
+
+        Returns None if the CatBoost model or municipality profiles are not loaded.
+        """
+        import pandas as pd
+
+        if not self.is_zoning_catboost_loaded():
+            logger.warning("[model_loader] CatBoost zoning model not loaded; cannot batch predict")
+            return None
+
+        logger.info("[model_loader] Running CatBoost batch prediction for crop=%s", crop_id)
+        schema = self.zoning_catboost_feature_schema
+        feature_names = schema["feature_names"]
+        profiles = self.municipality_profiles.copy()
+
+        # Add the crop column to every municipality row
+        profiles["cultivo"] = crop_id
+
+        # Make sure all schema columns exist
+        for col in feature_names:
+            if col not in profiles.columns:
+                profiles[col] = 0
+
+        df = profiles[feature_names].copy()
+
+        # Encode categorical columns using the shared preprocessor
+        categorical_features = schema.get("categorical_features", ["cultivo", "zona_climatica"])
+        for col in categorical_features:
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+
+        encoded = self.zoning_catboost_preprocessor.transform(df[categorical_features])
+        for i, col in enumerate(categorical_features):
+            df[col] = encoded[:, i]
+
+        X = df[feature_names]
+        probabilities = self.zoning_catboost_model.predict_proba(X)
+
+        class_order = schema.get("target_classes", ["no_apta", "baja", "media", "alta"])
+        class_to_api = {"no_apta": "none", "baja": "low", "media": "medium", "alta": "high"}
+
+        result_rows = []
+        for idx, probas in enumerate(probabilities):
+            class_idx = int(np.argmax(probas))
+            class_label = class_order[class_idx]
+            suitability = class_to_api.get(class_label, class_label)
+            confidence = round(float(probas[class_idx]), 4)
+            prob_dict = {
+                class_to_api.get(class_order[i], class_order[i]): round(float(p), 4)
+                for i, p in enumerate(probas)
+            }
+            result_rows.append({
+                "cod_dane_m": int(profiles.iloc[idx]["cod_dane_m"]),
+                "suitability": suitability,
+                "confidence": confidence,
+                "probabilities": prob_dict,
+                "method": "catboost_batch",
+            })
+
+        return pd.DataFrame(result_rows)
+
     def get_status(self) -> Dict[str, Any]:
         """Return detailed status of all model components."""
         return {
             "zoning_model_loaded": self.is_zoning_model_loaded(),
             "zoning_preprocessor_loaded": self.zoning_preprocessor is not None,
             "zoning_schema_loaded": self.zoning_feature_schema is not None,
+            "zoning_catboost_loaded": self.is_zoning_catboost_loaded(),
             "climate_analog_loaded": self.is_climate_analog_loaded(),
             "yield_xgb_loaded": self.yield_xgb_model is not None,
             "yield_lgbm_loaded": self.yield_lgbm_model is not None,

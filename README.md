@@ -245,7 +245,7 @@ docker compose restart api
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/v1/zoning/recommendations/{municipality_id}` | Ranking de cultivos para un municipio (LightGBM + recomendaciones por clima/suelo) |
-| `GET` | `/api/v1/zoning/map/{crop_id}` | Mapa de zonificación para todos los municipios |
+| `GET` | `/api/v1/zoning/map/{crop_id}` | Mapa de zonificación CatBoost para un cultivo, solo municipios medium/high |
 
 ### Calendars
 
@@ -408,6 +408,36 @@ curl http://localhost:8000/api/v1/zoning/recommendations/05001
 ```bash
 curl http://localhost:8000/api/v1/zoning/map/aguacate
 ```
+
+```json
+{
+  "crop_id": "aguacate",
+  "crop_name": "Aguacate",
+  "model_version": "zoning-catboost-v1",
+  "method": "catboost_batch",
+  "total_municipalities": 612,
+  "results": [
+    {
+      "municipality_id": "05001",
+      "municipality_name": "MEDELL\u00cdN",
+      "dane_code": "05001",
+      "lat": 6.244338,
+      "lng": -75.581482,
+      "suitability": "high",
+      "confidence": 0.8125,
+      "method": "catboost_batch",
+      "probabilities": {
+        "none": 0.0123,
+        "low": 0.0456,
+        "medium": 0.1296,
+        "high": 0.8125
+      }
+    }
+  ]
+}
+```
+
+El endpoint genera la predicción para todos los municipios en una sola llamada al modelo CatBoost y retorna únicamente los clasificados como `medium` o `high`, incluyendo coordenadas para renderizar en el mapa.
 
 ### Calendario batch
 

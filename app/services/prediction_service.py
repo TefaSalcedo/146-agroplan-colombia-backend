@@ -964,6 +964,37 @@ class PredictionService:
         )
         return result_payload
 
+    def predict_zoning_map_batch(
+        self,
+        db: Session,
+        crop_id: str,
+    ) -> Optional[pd.DataFrame]:
+        """Return zoning predictions for all municipalities in one batch call.
+
+        Uses the CatBoost model and filters to medium/high suitability only.
+        Returns a DataFrame with columns matching the map response needs.
+        """
+        import pandas as pd
+
+        logger.info("[predict_zoning_map_batch] Starting batch map prediction for crop_id=%s", crop_id)
+        loader = self._get_model_loader()
+        if not loader or not loader.is_zoning_catboost_loaded():
+            logger.warning("[predict_zoning_map_batch] CatBoost model not available")
+            return None
+
+        predictions = loader.predict_zoning_catboost_map(crop_id)
+        if predictions is None or predictions.empty:
+            logger.warning("[predict_zoning_map_batch] No predictions returned")
+            return None
+
+        # Filter to medium/high to reduce noise
+        filtered = predictions[predictions["suitability"].isin(["medium", "high"])]
+        logger.info(
+            "[predict_zoning_map_batch] Retained %s/%s municipalities (medium/high) for crop_id=%s",
+            len(filtered), len(predictions), crop_id,
+        )
+        return filtered.reset_index(drop=True)
+
     def get_crop_recommendation_context(
         self,
         db: Session,
