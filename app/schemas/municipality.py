@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Literal, Optional
 
 
 class MunicipalityResponse(BaseModel):
@@ -41,3 +41,21 @@ class DepartmentListResponse(BaseModel):
         default_factory=list, description="Departments with DANE codes and counts"
     )
     count: int = Field(default=0, description="Total number of departments")
+
+
+class MunicipalitySearchResult(BaseModel):
+    """Single result for municipality/department autocomplete."""
+
+    id: str = Field(description="DANE code (municipality 5 digits or department 2 digits)")
+    name: str = Field(description="Display name")
+    type: Literal["municipality", "department"] = Field(description="Entity type")
+    department_id: Optional[str] = Field(default=None, description="Department DANE code when type is municipality")
+    department_name: Optional[str] = Field(default=None, description="Department name when type is municipality")
+
+
+class MunicipalitySearchResponse(BaseModel):
+    """Response for municipality/department autocomplete search."""
+
+    query: str = Field(description="Search query")
+    results: list[MunicipalitySearchResult]
+    count: int

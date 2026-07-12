@@ -59,6 +59,63 @@ class MunicipalityCatalog:
         results = db.query(Department.name).order_by(Department.name).all()
         return [r[0] for r in results]
 
+    def search_municipalities_and_departments(self, db: Session, query: str, limit: int = 20):
+        """Search municipalities and departments by partial name match.
+
+        Returns mixed results for autocomplete inputs where users type either a
+        municipality or a department name. Minimum 2 characters are expected.
+        """
+        normalized = query.strip().lower()
+        if len(normalized) < 2:
+            return []
+
+        # Search departments
+        departments = (
+            db.query(Department)
+            .filter(Department.name.ilike(f"%{normalized}%"))
+            .order_by(Department.name)
+            .limit(limit)
+            .all()
+        )
+
+        # Search municipalities, joining department for name
+        municipalities = (
+            db.query(Municipality, Department)
+            .join(Department, Municipality.department_dane_code == Department.dane_code)
+            .filter(Municipality.name.ilike(f"%{normalized}%"))
+            .order_by(Municipality.name)
+            .limit(limit)
+            .all()
+        )
+
+        results = []
+        for dept in departments:
+            results.append({
+                "id": dept.dane_code,
+                "name": dept.name,
+                "type": "department",
+                "department_id": None,
+                "department_name": None,
+            })
+
+        for muni, dept in municipalities:
+            results.append({
+                "id": muni.dane_code,
+                "name": muni.name,
+                "type": "municipality",
+                "department_id": dept.dane_code,
+                "department_name": dept.name,
+            })
+
+        # Prioritize exact prefix matches, then by name length
+        results.sort(key=lambda r: (
+            0 if r["name"].lower().startswith(normalized) else 1,
+            len(r["name"]),
+            r["name"].lower(),
+        ))
+
+        return results[:limit]
+
     def get_nearest_municipality(self, db: Session, lat: float, lng: float, max_distance_km: float = 20):
         """Find the nearest covered municipality to given coordinates using Haversine formula."""
         if not self.is_within_colombia(lat, lng):

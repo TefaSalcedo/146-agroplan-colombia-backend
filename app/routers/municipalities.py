@@ -9,6 +9,8 @@ from app.schemas.municipality import (
     MunicipalityListResponse,
     DepartmentListResponse,
     DepartmentResponse,
+    MunicipalitySearchResult,
+    MunicipalitySearchResponse,
 )
 from app.schemas.system import ErrorResponse
 
@@ -80,6 +82,38 @@ def get_departments(db: Session = Depends(get_db)):
         departments=[d.name for d in dept_responses],
         departments_detailed=dept_responses,
         count=len(dept_responses),
+    )
+
+
+@router.get(
+    "/search",
+    response_model=MunicipalitySearchResponse,
+    summary="Search municipalities and departments by name",
+    description=(
+        "Autocomplete endpoint for the new single selector.\n\n"
+        "Returns both municipalities and departments matching the query. "
+        "The frontend can use the `type` field to render the appropriate option.\n\n"
+        "Use cases:\n"
+        "- User types 2+ letters and selects a municipality or department.\n"
+        "- Department selections can be expanded to their municipalities on the frontend."
+    ),
+    responses={
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {
+            "model": ErrorResponse,
+            "description": "Query must be at least 2 characters.",
+        }
+    },
+)
+def search_municipalities(
+    q: str = Query(..., description="Search text (minimum 2 characters)", min_length=2, max_length=100),
+    limit: int = Query(20, ge=1, le=50, description="Maximum number of results"),
+    db: Session = Depends(get_db),
+):
+    results = catalog.search_municipalities_and_departments(db, q, limit)
+    return MunicipalitySearchResponse(
+        query=q,
+        results=[MunicipalitySearchResult(**r) for r in results],
+        count=len(results),
     )
 
 

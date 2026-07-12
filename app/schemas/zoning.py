@@ -29,7 +29,6 @@ class ZoningResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     model_version: str
     factors: ZoningFactors
-    # Extended fields (optional for backwards compatibility)
     method: Optional[str] = Field(default=None, description="Prediction method: primary_model, fallback, unavailable")
     probabilities: Optional[Dict[str, float]] = Field(
         default=None, description="Per-class probabilities when available"
@@ -85,3 +84,18 @@ class ZoningMapResponse(BaseModel):
     results: List[ZoningMapMunicipalityResult]
     total_municipalities: int
     cache_hit: Optional[bool] = None
+
+
+class ZoningMockBatchRequest(BaseModel):
+    """Legacy mock batch request for a crop across all municipalities."""
+
+    crop_id: str = Field(description="Crop identifier to evaluate across municipalities")
+
+
+class ZoningMockBatchResponse(BaseModel):
+    """Legacy mock batch response for a crop across all municipalities."""
+
+    crop_id: str
+    predictions: List[ZoningResponse]
+    count: int
+    model_version: str = "mock-v1"

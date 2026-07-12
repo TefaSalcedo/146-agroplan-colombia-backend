@@ -14,6 +14,8 @@ from app.schemas.zoning import (
     ZoningBatchCropResult,
     ZoningMapResponse,
     ZoningMapMunicipalityResult,
+    ZoningMockBatchRequest,
+    ZoningMockBatchResponse,
 )
 from app.schemas.system import ErrorResponse
 
@@ -137,7 +139,6 @@ def get_zoning_recommendations(
             )
         )
 
-    # Sort by confidence descending
     results.sort(key=lambda x: x.confidence, reverse=True)
 
     return ZoningBatchResponse(
@@ -173,7 +174,7 @@ def get_zoning_map(
     if not crop:
         raise HTTPException(status_code=404, detail="Crop not found")
 
-    from app.models import Municipality, Department
+    from app.models import Municipality
 
     municipalities = db.query(Municipality).order_by(Municipality.dane_code).all()
 
@@ -211,4 +212,46 @@ def get_zoning_map(
         method=primary_method,
         results=results,
         total_municipalities=len(results),
+    )
+
+
+@router.post(
+    "/mock/predict/batch",
+    response_model=ZoningMockBatchResponse,
+    summary="Predict zoning suitability for all municipalities (mock)",
+    description=(
+        "Legacy mock endpoint: returns crop suitability predictions for every municipality.\n\n"
+        "Use cases:\n"
+        "- Render a nationwide crop suitability map using the mock predictor.\n"
+        "- Compare viability across regions without issuing hundreds of single requests."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "Crop ID not found.",
+        }
+    },
+)
+def predict_zoning_mock_batch(
+    request: ZoningMockBatchRequest,
+    db: Session = Depends(get_db),
+):
+    crop = crop_catalog.get_crop_by_id(db, request.crop_id)
+    if not crop:
+        raise HTTPException(status_code=404, detail="Crop not found")
+
+    municipalities = municipality_catalog.get_municipalities(db)
+    raw_predictions = mock_predictor.predict_zoning_batch(
+        db=db,
+        crop_id=request.crop_id,
+        municipalities=municipalities,
+    )
+
+    predictions = [ZoningResponse(**prediction) for prediction in raw_predictions]
+
+    return ZoningMockBatchResponse(
+        crop_id=request.crop_id,
+        predictions=predictions,
+        count=len(predictions),
+        model_version="mock-v1",
     )
