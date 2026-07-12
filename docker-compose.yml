@@ -34,6 +34,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-30}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
       - CACHE_TTL_STRATEGY=${CACHE_TTL_STRATEGY:-end_of_month_bogota}
+      - ENABLE_MOCK_PREDICTOR=${ENABLE_MOCK_PREDICTOR:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=America/Bogota
     depends_on:

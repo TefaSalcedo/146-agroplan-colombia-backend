@@ -10,6 +10,7 @@ mock predictions with explicit method labeling.
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -18,6 +19,11 @@ import numpy as np
 
 from app.config import get_settings
 from app.logger import get_logger
+
+# Make shared_eval (climate_analogs pickle dependency) importable during unpickling.
+_ML_DIR = Path(__file__).resolve().parent.parent / "ml"
+if str(_ML_DIR) not in sys.path:
+    sys.path.insert(0, str(_ML_DIR))
 
 settings = get_settings()
 logger = get_logger("app.services.model_loader")
@@ -164,6 +170,7 @@ class ModelLoader:
         self.zoning_model = None
         self.zoning_preprocessor = None
         self.zoning_feature_schema: Optional[Dict] = None
+        self.climate_analog_recommender = None
 
         self.yield_xgb_model = None
         self.yield_lgbm_model = None
@@ -319,6 +326,24 @@ class ModelLoader:
                 self.zoning_feature_schema = json.load(f)
             n_features = self.zoning_feature_schema.get("n_features", "unknown")
             logger.info(f"[model_loader] Loaded zoning feature schema: {n_features} features")
+
+        # Climate analog k-NN recommender (used as fallback for unseen municipalities)
+        analog_file = _find_first_file([
+            zoning_path / "climate_analog_recommender.pkl",
+            models_dir / "climate_analog_recommender.pkl",
+        ])
+        if analog_file:
+            try:
+                logger.info("[model_loader] Loading climate analog recommender")
+                import pickle
+                with open(analog_file, "rb") as f:
+                    self.climate_analog_recommender = pickle.load(f)
+                logger.info(
+                    f"[model_loader] Loaded climate analog recommender: "
+                    f"{len(self.climate_analog_recommender.reference_df)} reference rows"
+                )
+            except Exception as e:
+                logger.error("[model_loader] Could not load climate analog recommender: %s", e)
 
     def _load_yield_models(self, models_dir: Path):
         """Load the yield XGBoost and LightGBM models and ensemble weights."""
@@ -513,6 +538,10 @@ class ModelLoader:
         """Check if k-NN fallback profiles are loaded."""
         return self.knn_fallback is not None
 
+    def is_climate_analog_loaded(self) -> bool:
+        """Check if the climate analog k-NN recommender is loaded."""
+        return self.climate_analog_recommender is not None
+
     def is_profiles_loaded(self) -> bool:
         return self._profiles_loaded
 
@@ -576,6 +605,7 @@ class ModelLoader:
             "zoning_model_loaded": self.is_zoning_model_loaded(),
             "zoning_preprocessor_loaded": self.zoning_preprocessor is not None,
             "zoning_schema_loaded": self.zoning_feature_schema is not None,
+            "climate_analog_loaded": self.is_climate_analog_loaded(),
             "yield_xgb_loaded": self.yield_xgb_model is not None,
             "yield_lgbm_loaded": self.yield_lgbm_model is not None,
             "yield_preprocessor_loaded": self.yield_preprocessor is not None,

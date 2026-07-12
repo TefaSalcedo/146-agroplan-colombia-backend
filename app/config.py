@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     climate_sync_days_ahead: int = 16
     climate_sync_cleanup_days: int = 180
 
+    # Fallback predictor (development only)
+    enable_mock_predictor: bool = False  # True allows MockPredictor fallback
+
     # Observability / Debug logging
     log_level: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     log_format: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"

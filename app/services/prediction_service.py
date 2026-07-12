@@ -34,6 +34,13 @@ _ZONING_CLASS_TO_API = {
     "alta": "high",
 }
 
+# Suitability thresholds for the climate analog k-NN recommender scores.
+_ANALOG_SUITABILITY_THRESHOLDS = [
+    ("high", 0.50),
+    ("medium", 0.25),
+    ("low", 0.05),
+]
+
 
 def _parse_months_string(value: Any) -> List[int]:
     """Parse a comma-separated month string into a list of ints."""
@@ -325,6 +332,115 @@ class PredictionService:
         db.add(run)
         db.commit()
 
+    def _predict_with_climate_analog(
+        self,
+        db: Session,
+        crop_id: str,
+        municipality_id: str,
+        loader: Any,
+    ) -> Optional[Dict]:
+        """Use the climate analog k-NN recommender as a fallback.
+
+        The recommender was trained on climate + soil features and returns the
+        crops most likely to prosper in a region. We map the requested crop's
+        recommendation score back to a zoning-like suitability/confidence.
+
+        Returns None if the recommender or municipality profile is unavailable,
+        or if the requested crop is not known to the recommender.
+        """
+        if not loader or not loader.is_climate_analog_loaded():
+            logger.debug("[_predict_with_climate_analog] Recommender not loaded")
+            return None
+
+        if loader.municipality_profiles is None:
+            logger.debug("[_predict_with_climate_analog] Municipality profiles not loaded")
+            return None
+
+        profiles = loader.municipality_profiles
+        try:
+            dane_int = int(municipality_id)
+        except (ValueError, TypeError):
+            logger.warning("[_predict_with_climate_analog] Invalid municipality_id: %s", municipality_id)
+            return None
+
+        # The parquet may use either 'cod_dane_m' or the index for the DANE code.
+        if "cod_dane_m" in profiles.columns:
+            row = profiles[profiles["cod_dane_m"] == dane_int]
+        else:
+            row = profiles.loc[[dane_int]] if dane_int in profiles.index else pd.DataFrame()
+
+        if row.empty:
+            logger.warning("[_predict_with_climate_analog] No profile for municipality_id=%s", municipality_id)
+            return None
+
+        recommender = loader.climate_analog_recommender
+        feature_names = recommender.feature_names
+        missing = [f for f in feature_names if f not in row.columns]
+        if missing:
+            logger.warning(
+                "[_predict_with_climate_analog] Missing analog features for municipality_id=%s: %s",
+                municipality_id,
+                missing,
+            )
+            return None
+
+        logger.info(
+            "[_predict_with_climate_analog] Querying recommender for crop_id=%s municipality_id=%s",
+            crop_id,
+            municipality_id,
+        )
+        try:
+            query = row[feature_names].fillna(0)
+            rec_result = recommender.recommend(query)
+            if not rec_result:
+                return None
+            top_crops = rec_result[0].get("top_crops", [])
+        except Exception as e:
+            logger.error("[_predict_with_climate_analog] Recommender inference failed: %s", e)
+            return None
+
+        # Map recommender score to suitability/confidence.
+        crop_score = next((score for c, score in top_crops if c == crop_id), 0.0)
+        suitability = "none"
+        for label, threshold in _ANALOG_SUITABILITY_THRESHOLDS:
+            if crop_score >= threshold:
+                suitability = label
+                break
+
+        logger.info(
+            "[_predict_with_climate_analog] Result for crop_id=%s: suitability=%s score=%s",
+            crop_id,
+            suitability,
+            round(crop_score, 4),
+        )
+
+        # Build a synthetic probability distribution: the requested crop gets
+        # the recommender score, the remaining probability is spread across
+        # the other classes in descending order.
+        remaining = max(0.0, 1.0 - crop_score)
+        other_classes = [s for s, _ in _ANALOG_SUITABILITY_THRESHOLDS if s != suitability]
+        if other_classes:
+            per_other = remaining / len(other_classes)
+            probabilities = {s: round(per_other, 4) for s in other_classes}
+        else:
+            probabilities = {}
+        probabilities[suitability] = round(crop_score, 4)
+
+        return {
+            "crop_id": crop_id,
+            "municipality_id": municipality_id,
+            "suitability": suitability,
+            "confidence": round(crop_score, 4) if crop_score > 0 else round(0.5, 4),
+            "model_version": "climate-analog-knn-v1",
+            "factors": {
+                "temperature_match": True,
+                "precipitation_match": True,
+                "soil_match": True,
+                "altitude_match": True,
+            },
+            "probabilities": probabilities,
+        }
+
     def predict_zoning(
         self,
         db: Session,
@@ -419,11 +535,49 @@ class PredictionService:
                     missing_features = ["primary_model_error"]
 
         if result is None:
-            # Mock fallback for development or when artifacts are incomplete
-            logger.warning("[predict_zoning] Falling back to MockPredictor (method=mock)")
-            result = self._mock.predict_zoning(db, crop_id, municipality_id)
-            method = "mock"
-            fallback_used = True
+            # Climate analog k-NN fallback: works for regions with no historical records
+            # because it finds similar climate+soil municipalities.
+            logger.info("[predict_zoning] Trying climate analog k-NN fallback")
+            result = self._predict_with_climate_analog(db, crop_id, municipality_id, loader)
+            if result:
+                method = "climate_analog"
+                fallback_used = True
+                logger.info("[predict_zoning] Climate analog fallback succeeded")
+
+        if result is None:
+            # Last-resort mock fallback (development only, disabled by default)
+            if settings.enable_mock_predictor:
+                logger.warning("[predict_zoning] Falling back to MockPredictor (method=mock)")
+                result = self._mock.predict_zoning(db, crop_id, municipality_id)
+                method = "mock"
+                fallback_used = True
+            else:
+                logger.error(
+                    "[predict_zoning] No prediction available for crop_id=%s municipality_id=%s "
+                    "and mock predictor is disabled",
+                    crop_id,
+                    municipality_id,
+                )
+                result = {
+                    "crop_id": crop_id,
+                    "municipality_id": municipality_id,
+                    "suitability": "none",
+                    "confidence": 0.0,
+                    "model_version": "unavailable",
+                    "factors": {
+                        "temperature_match": False,
+                        "precipitation_match": False,
+                        "soil_match": False,
+                        "altitude_match": False,
+                    },
+                    "probabilities": {"none": 1.0, "low": 0.0, "medium": 0.0, "high": 0.0},
+                    "warnings": [
+                        "No se pudo cargar el modelo principal ni el fallback de analogía climática, "
+                        "y el predictor mock está desactivado."
+                    ],
+                }
+                method = "unavailable"
+                fallback_used = True
 
         latency_ms = int((time.time() - start) * 1000)
         logger.info("[predict_zoning] Inference completed in %sms (method=%s)", latency_ms, method)

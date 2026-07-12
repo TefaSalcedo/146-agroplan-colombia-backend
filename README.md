@@ -190,6 +190,7 @@ docker compose restart api
 | `LLM_TIMEOUT_SECONDS` | Timeout por llamada LLM | `30` |
 | `ADMIN_API_KEY` | API key para endpoints admin | `tu-admin-key-segura` |
 | `CACHE_TTL_STRATEGY` | Estrategia de TTL de caché | `end_of_month_bogota` |
+| `ENABLE_MOCK_PREDICTOR` | Activar MockPredictor como fallback final | `false` |
 || `LOG_LEVEL` | Nivel de logging (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `API_V1_PREFIX` | Prefijo de la API | `/api/v1` |
 | `CORS_ORIGINS` | Orígenes permitidos | `http://localhost:3000,http://localhost:3001` |
