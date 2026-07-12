@@ -1,5 +1,5 @@
 import httpx
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from app.config import get_settings
 
 settings = get_settings()
@@ -96,7 +96,7 @@ class OpenMeteoService:
             "precipitation": round(current.get("precipitation", 0), 1),
             "icon": weather_info["icon"],
             "source": "open-meteo",
-            "fetched_at": datetime.utcnow().isoformat() + "Z"
+            "fetched_at": datetime.now(timezone.utc).isoformat()
         }
     
     async def get_historical_weather(
