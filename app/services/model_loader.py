@@ -30,38 +30,109 @@ def _sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
-def _download_hf_repo(repo_id: str, local_dir: Path, revision: str = "main", token: str = "") -> bool:
-    """Download all files from a Hugging Face model repo into a local directory.
+def _missing_files(local_dir: Path, filenames: List[str]) -> List[str]:
+    """Return the subset of filenames that do not exist in local_dir."""
+    missing = []
+    for name in filenames:
+        if not (local_dir / name).exists():
+            missing.append(name)
+    return missing
 
-    Returns True if files were downloaded or already present, False on failure.
-    Failures are logged but not raised so the loader can fall back to local files
-    or mock predictions.
+
+def _download_hf_files(
+    repo_id: str,
+    local_dir: Path,
+    filenames: List[str],
+    revision: str = "main",
+    token: str = "",
+) -> bool:
+    """Download a specific list of files from a Hugging Face model repo.
+
+    Skips files that already exist locally so restarts are fast and network
+    usage is minimal. Returns True if all requested files are present afterwards.
     """
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import hf_hub_download
     except ImportError:
         print("[model_loader] huggingface_hub not installed; cannot download from HF")
         return False
 
-    if not repo_id:
+    if not repo_id or not filenames:
         return False
 
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    # Only download what is actually missing
+    to_download = _missing_files(local_dir, filenames)
+    if not to_download:
+        print(f"[model_loader] All requested files already cached in {local_dir}")
+        return True
+
+    print(f"[model_loader] Downloading {len(to_download)} missing file(s) from {repo_id}")
     try:
-        print(f"[model_loader] Downloading HF repo {repo_id} (rev {revision}) to {local_dir}")
-        local_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_download(
-            repo_id=repo_id,
-            revision=revision,
-            token=token or None,
-            local_dir=str(local_dir),
-            local_dir_use_symlinks=False,
-            resume_download=True,
-        )
-        print(f"[model_loader] Downloaded HF repo {repo_id} to {local_dir}")
+        for filename in to_download:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                token=token or None,
+                local_dir=str(local_dir),
+                local_dir_use_symlinks=False,
+                resume_download=True,
+            )
+        print(f"[model_loader] Downloaded missing files from {repo_id} to {local_dir}")
         return True
     except Exception as e:
-        print(f"[model_loader] Failed to download HF repo {repo_id}: {e}")
+        print(f"[model_loader] Failed to download files from {repo_id}: {e}")
         return False
+
+
+def _resolve_yield_files(local_dir: Path) -> List[str]:
+    """Return the minimal set of yield files needed for the MVP ensemble."""
+    active_file = local_dir / "active_models.json"
+    active_models = {}
+    if active_file.exists():
+        try:
+            with open(active_file) as f:
+                active_models = json.load(f)
+        except Exception:
+            pass
+
+    files = ["active_models.json"]
+    models = active_models or {
+        "xgboost": {"path": "xgboost_top20_cleaned.pkl"},
+        "lightgbm": {"path": "lightgbm_top20_cleaned.pkl"},
+    }
+    for key, meta in models.items():
+        if key in ("xgboost", "lightgbm"):
+            path = meta.get("path") if isinstance(meta, dict) else meta
+            if path:
+                files.append(path)
+            log = meta.get("log") if isinstance(meta, dict) else None
+            if log:
+                files.append(log)
+
+    # Bundle artifacts (uploaded separately by the data science workflow)
+    files.extend([
+        "preprocessor.pkl",
+        "feature_schema.json",
+        "weights.json",
+    ])
+    return files
+
+
+def _resolve_zoning_files(local_dir: Path) -> List[str]:
+    """Return the minimal set of zoning files needed for the MVP backend."""
+    return [
+        "lightgbm_tuned_multi_random_holdout.pkl",
+        "lightgbm_tuned_multi_random_holdout_explainability_report.json",
+        "climate_analog_recommender.pkl",
+        # Bundle artifacts
+        "preprocessor.pkl",
+        "feature_schema.json",
+        "manifest.json",
+        "golden_vectors.json",
+    ]
 
 
 class ModelLoader:
@@ -88,27 +159,63 @@ class ModelLoader:
         self._load_models()
 
     def _load_models(self):
-        """Load models from local cache or download from HF."""
+        """Load models from local cache or download from HF.
+
+        The default "mvp" mode downloads only the files required for the
+        production endpoints, which keeps disk/RAM usage low on constrained
+        hosts such as Oracle Cloud Free Tier.
+        """
         models_dir = Path(settings.ml_models_path)
         models_dir.mkdir(parents=True, exist_ok=True)
+
+        download_mode = getattr(settings, "hf_download_mode", "mvp").lower()
 
         try:
             # Download from HF if repos are configured. This is best-effort:
             # failures are logged and the loader continues with local files/mock.
-            if settings.hf_model_repo_zoning:
-                _download_hf_repo(
-                    settings.hf_model_repo_zoning,
-                    models_dir / "zoning",
-                    revision=settings.hf_model_revision,
-                    token=settings.hf_token,
-                )
-            if settings.hf_model_repo_yield:
-                _download_hf_repo(
-                    settings.hf_model_repo_yield,
-                    models_dir / "yield",
-                    revision=settings.hf_model_revision,
-                    token=settings.hf_token,
-                )
+            if download_mode != "none" and settings.hf_model_repo_zoning:
+                if download_mode == "all":
+                    from huggingface_hub import snapshot_download
+
+                    snapshot_download(
+                        repo_id=settings.hf_model_repo_zoning,
+                        revision=settings.hf_model_revision,
+                        token=settings.hf_token or None,
+                        local_dir=str(models_dir / "zoning"),
+                        local_dir_use_symlinks=False,
+                        resume_download=True,
+                    )
+                else:
+                    zoning_files = _resolve_zoning_files(models_dir / "zoning")
+                    _download_hf_files(
+                        settings.hf_model_repo_zoning,
+                        models_dir / "zoning",
+                        filenames=zoning_files,
+                        revision=settings.hf_model_revision,
+                        token=settings.hf_token,
+                    )
+
+            if download_mode != "none" and settings.hf_model_repo_yield:
+                if download_mode == "all":
+                    from huggingface_hub import snapshot_download
+
+                    snapshot_download(
+                        repo_id=settings.hf_model_repo_yield,
+                        revision=settings.hf_model_revision,
+                        token=settings.hf_token or None,
+                        local_dir=str(models_dir / "yield"),
+                        local_dir_use_symlinks=False,
+                        resume_download=True,
+                    )
+                else:
+                    yield_files = _resolve_yield_files(models_dir / "yield")
+                    _download_hf_files(
+                        settings.hf_model_repo_yield,
+                        models_dir / "yield",
+                        filenames=yield_files,
+                        revision=settings.hf_model_revision,
+                        token=settings.hf_token,
+                    )
 
             # Try to load zoning model
             self._load_zoning_model(models_dir)

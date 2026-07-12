@@ -502,6 +502,47 @@ curl http://localhost:8000/api/v1/admin/climate-sync/status
 - La carga inicial completa (~1.100 municipios) consume aproximadamente 1.100 requests.
 - El mantenimiento diario consume ~1.100 requests adicionales, dentro del límite de 10.000/día.
 
+## Despliegue en Oracle Cloud Free Tier
+
+La imagen está preparada para correr en la capa gratuita de Oracle Cloud:
+
+- Usa imágenes oficiales multi-arquitectura (`python:3.14-slim` y `postgres:18-alpine`), compatibles con Ampere A1 (ARM64).
+- El modo por defecto `HF_DOWNLOAD_MODE=mvp` descarga solo los modelos estrictamente necesarios, evitando el archivo grande de Random Forest (~1.2 GB) que no se usa en el MVP.
+- El volumen `models_data` persiste los modelos entre reinicios, por lo que no se vuelven a descargar después del primer arranque.
+
+### Recursos recomendados
+
+| Servicio | Shape recomendado | Notas |
+|---|---|---|
+| VM | `VM.Standard.A1.Flex` (hasta 4 OCPU / 24 GB RAM) | Suficiente para API + PostgreSQL + modelos MVP (~120 MB en memoria). |
+| Alternativa | `VM.Standard.E2.1.Micro` (1/8 OCPU, 1 GB RAM) | Posible pero ajustada; considera desactivar el scheduler (`ENABLE_CLIMATE_SYNC=false`) y usar una base externa. |
+
+### `.env` sugerido para Oracle
+
+```bash
+HF_DOWNLOAD_MODE=mvp
+ENABLE_CLIMATE_SYNC=false
+# Opcional: base de datos gestionada o en el mismo host
+DATABASE_URL=postgresql://agroplan:agroplan@db:5432/agroplan
+```
+
+### Primer arranque en Oracle
+
+```bash
+# Clonar, copiar env y levantar
+git clone <repo>
+cd 146-AgroPlan-Colombia-Backend
+cp .env.example .env
+# editar .env con HF_TOKEN y demás variables
+docker compose up -d --build
+
+# Migrar y poblar
+docker compose exec api alembic upgrade head
+docker compose exec api python scripts/seed_db.py --force --strict
+```
+
+Tras la primera descarga, los modelos quedan en el volumen `models_data`. Los reinicios posteriores serán rápidos.
+
 ## Notas Importantes
 
 - Los endpoints de predicción usan `mock` cuando no hay modelos cargados. El campo `method` indica `mock` o `primary_model`.

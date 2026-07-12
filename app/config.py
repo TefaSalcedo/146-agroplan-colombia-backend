@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     hf_model_repo_zoning: str = ""
     hf_model_repo_yield: str = ""
     hf_model_revision: str = "main"
+    hf_download_mode: str = "mvp"  # mvp | all | none
 
     # LLM
     llm_provider: str = "openrouter"

@@ -23,6 +23,7 @@ services:
       - HF_MODEL_REPO_ZONING=${HF_MODEL_REPO_ZONING:-}
       - HF_MODEL_REPO_YIELD=${HF_MODEL_REPO_YIELD:-}
       - HF_MODEL_REVISION=${HF_MODEL_REVISION:-main}
+      - HF_DOWNLOAD_MODE=${HF_DOWNLOAD_MODE:-mvp}
       - LLM_PROVIDER=${LLM_PROVIDER:-openrouter}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODELS=${OPENROUTER_MODELS:-}
@@ -37,6 +38,7 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app
+      - models_data:/app/models
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   db:
@@ -57,3 +59,4 @@ services:
 
 volumes:
   postgres_data:
+  models_data:
