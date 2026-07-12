@@ -22,6 +22,21 @@ logger = get_logger("app.services.llm_service")
 
 PROMPT_SCHEMA_VERSION = "1.0"
 
+_FARMER_LANGUAGE_RULES_SPANISH = (
+    "REGLAS DE LENGUAJE PARA CAMPESINOS:\n"
+    "1. Usa palabras comunes del campo. NO uses términos técnicos como 'suelo franco arenoso', "
+    "'textura franco', 'pH', 'topografía', 'latitud', 'longitud', 'grados Celsius', 'msnm', "
+    "'metros sobre el nivel del mar', 'anomalía', 'precipitación' (di 'lluvia'), 'humedad relativa'.\n"
+    "2. Si necesitas hablar del suelo, di cosas como 'tierra suelta', 'tierra pesada', "
+    "'tierra que drena bien', 'tierra negra y fértil', 'tierra arcillosa', 'tierra arenosa'.\n"
+    "3. Si hablas de altura, di 'esta zona es de montaña baja', 'zona fría', 'zona templada', "
+    "'zona cálida', según corresponda. No digas la altitud en metros a menos que sea necesario.\n"
+    "4. La temperatura exprésala como 'hace frío', 'hace calor', 'es templado', 'es suave'. "
+    "No uses grados Celsius a menos que sea absolutamente necesario.\n"
+    "5. La lluvia exprésala como 'llueve poco', 'llueve bastante', 'hay buena lluvia'.\n"
+    "6. Todo en español de Colombia, claro y directo."
+)
+
 
 class LLMService:
     """LLM service with round-robin provider/model selection."""
@@ -236,11 +251,16 @@ class LLMService:
         start = time.time()
 
         system_prompt = (
-            "You are an agronomic assistant for Colombia. Given crop prediction data, "
-            "write a concise, practical explanation for a farmer. "
-            "Focus on: why the crop is or isn't suitable, key climate factors, and "
-            "one actionable recommendation. Do not invent data. Use only the provided "
-            "information. Keep it under 200 words."
+            "Eres un agrónomo colombiano que asesora a campesinos. Dado el resultado de una "
+            "predicción agrícola, escribe una explicación corta y práctica para un agricultor.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. Explica por qué el cultivo puede servir o no para ese municipio.\n"
+            "2. Menciona los factores de clima más importantes en palabras sencillas.\n"
+            "3. Da UNA recomendación concreta y útil para la finca.\n"
+            "4. No inventes datos. Usa solo la información proporcionada.\n"
+            "5. Máximo 150 palabras."
         )
 
         user_content = json.dumps(
@@ -356,12 +376,16 @@ class LLMService:
         start = time.time()
 
         system_prompt = (
-            "Eres un asistente agronomo para campesinos de Colombia. "
-            "Responde SIEMPRE en espanol, en un solo parrafo corto (maximo 120 palabras). "
-            "Usa lenguaje sencillo y util para el dia a dia del agricultor. "
-            "Da UNA recomendacion clara: si conviene sembrar este cultivo en este municipio, "
-            "en que meses plantar, cuidados basicos de suelo/riego, y advertencias si el clima "
-            "o suelo no son adecuados. No inventes datos; usa solo la informacion proporcionada."
+            "Eres un agrónomo colombiano que asesora a campesinos. Responde SIEMPRE en español, "
+            "en un solo párrafo corto (máximo 120 palabras).\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. Di si conviene sembrar este cultivo en este municipio.\n"
+            "2. Menciona en qué meses plantar.\n"
+            "3. Da cuidados básicos de tierra y riego.\n"
+            "4. Menciona advertencias si el clima o la tierra no son adecuados.\n"
+            "5. No inventes datos; usa solo la información proporcionada."
         )
 
         user_content = json.dumps(
@@ -480,11 +504,11 @@ class LLMService:
             "Eres un agrónomo colombiano con mucha experiencia en extensión rural. "
             "Tu trabajo es escribir una guía práctica y fácil de leer para campesinos "
             "de Colombia que quieren sembrar un cultivo.\n\n"
-            "REGLAS IMPORTANTES:\n"
-            "1. Usa un lenguaje sencillo, cercano y sin tecnicismos difíciles.\n"
-            "2. Escribe en español de Colombia.\n"
-            "3. No inventes datos. Usa únicamente la información del cultivo proporcionada.\n"
-            "4. La guía debe tener un resumen corto y varias secciones con título y contenido.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. No inventes datos. Usa únicamente la información del cultivo proporcionada.\n"
+            "2. La guía debe tener un resumen corto y varias secciones con título y contenido.\n\n"
             "ESTRUCTURA OBLIGATORIA DEL JSON:\n"
             "{\n"
             '  "summary": "resumen amigable de 2 o 3 frases",\n'
@@ -642,16 +666,8 @@ class LLMService:
             "Eres un agrónomo colombiano que asesora a campesinos de todo el país. "
             "Tu trabajo es dar recomendaciones PRÁCTICAS y FÁCILES DE ENTENDER para un "
             "municipio específico.\n\n"
-            "REGLAS DE LENGUAJE:\n"
-            "1. Usa palabras comunes del campo. NO uses términos técnicos como "
-            "'suelo franco arenoso', 'textura franco', 'pH', 'topografía', 'latitud'.\n"
-            "2. Si necesitas hablar del suelo, di cosas como 'tierra suelta', 'tierra "
-            "pesada', 'tierra que drena bien', 'tierra negra y fértil', etc.\n"
-            "3. Si hablas de altura, di 'esta zona es de montaña baja', 'zona fría', "
-            "'zona templada', 'zona cálida', según corresponda.\n"
-            "4. La temperatura exprésala como 'hace frío', 'hace calor', 'es templado'. "
-            "No uses grados Celsius a menos que sea necesario.\n"
-            "5. Todo en español de Colombia.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
             "REGLAS DE CONTENIDO:\n"
             "1. En 'alternative_crops' sugiere cultivos que NO estén en la lista del "
             "municipio. Como base de inspiración usa la lista 'alternative_crops_from_ecocrop_fao' "
