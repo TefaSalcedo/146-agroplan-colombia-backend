@@ -84,7 +84,7 @@ def get_daily_forecast(
 )
 def get_monthly_forecast(
     municipality_id: str = Path(..., description="AgroPlan municipality ID"),
-    months: int = Query(4, ge=1, le=7, description="Number of months to forecast (1-7)"),
+    months: int = Query(4, ge=1, le=12, description="Number of months to forecast (1-12). Only months available in the SEAS5 seasonal outlook will be returned."),
     db: Session = Depends(get_db),
 ):
     logger.info("[endpoint] GET /forecast/monthly/{municipality_id} called (municipality_id=%s, months=%s)", municipality_id, months)
