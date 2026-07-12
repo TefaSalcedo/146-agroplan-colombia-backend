@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,6 +17,7 @@ from app.services.crop_catalog import CropCatalog
 from app.services.municipality_ai_guide_service import get_municipality_ai_guide_service
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.prediction_service import PredictionService
+from app.middleware.rate_limit import ML_LLM_GROUP, enforce_rate_limit, rate_limit
 
 router = APIRouter(prefix="/zoning", tags=["zoning"])
 municipality_catalog = MunicipalityCatalog()
@@ -45,7 +46,10 @@ logger = get_logger("app.routers.zoning")
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def get_zoning_recommendations_by_municipality(
+    http_request: Request,
     municipality_id: str = Path(..., description="Municipality DANE code (5 digits)"),
     db: Session = Depends(get_db),
 ):
@@ -132,7 +136,10 @@ def get_zoning_recommendations_by_municipality(
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def get_zoning_map(
+    http_request: Request,
     crop_id: str = Path(..., description="Crop identifier (e.g. aguacate)"),
     db: Session = Depends(get_db),
 ):
@@ -209,7 +216,10 @@ def get_zoning_map(
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def get_municipality_ai_guide(
+    http_request: Request,
     municipality_id: str = Path(..., description="Municipality DANE code (5 digits)"),
     db: Session = Depends(get_db),
 ):

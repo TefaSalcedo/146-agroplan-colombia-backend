@@ -8,8 +8,11 @@ one is generated and persisted.
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.logger import get_logger
 from app.models import Crop, CropMunicipalityRecommendation, Municipality
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
@@ -34,19 +37,49 @@ class CropRecommendationCacheService:
         crop: Crop,
         municipality: Municipality,
     ) -> Dict[str, Any]:
-        """Return a cached or freshly generated recommendation."""
+        """Return a cached or freshly generated recommendation.
+
+        When LLM is disabled, return an empty response without reading or
+        writing the recommendation cache.
+
+        Uses an advisory lock to prevent concurrent requests from generating
+        duplicate recommendations for the same crop-municipality pair.
+        """
         now = datetime.now(timezone.utc)
         dane = municipality.dane_code
         crop_id = crop.id
 
-        cached = (
-            db.query(CropMunicipalityRecommendation)
-            .filter(
-                CropMunicipalityRecommendation.crop_id == crop_id,
-                CropMunicipalityRecommendation.municipality_dane_code == dane,
+        if not get_settings().llm_enabled:
+            return {
+                "crop_id": crop_id,
+                "crop_name": crop.name,
+                "municipality_id": dane,
+                "municipality_name": municipality.name,
+                "text": "",
+                "cached": False,
+                "generated_at": None,
+                "expires_at": None,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
+
+        def _fetch_recommendation() -> Optional[CropMunicipalityRecommendation]:
+            return (
+                db.query(CropMunicipalityRecommendation)
+                .filter(
+                    CropMunicipalityRecommendation.crop_id == crop_id,
+                    CropMunicipalityRecommendation.municipality_dane_code == dane,
+                )
+                .first()
             )
-            .first()
-        )
+
+        cached = _fetch_recommendation()
 
         if cached and cached.expires_at and cached.expires_at > now:
             logger.info(
@@ -69,6 +102,22 @@ class CropRecommendationCacheService:
                 crop_id,
                 dane,
             )
+
+        # Advisory lock scoped to this crop-municipality pair.
+        lock_key = abs(hash(f"crop_recommendation:{crop_id}:{dane}")) % (2**31)
+        logger.debug("[get_or_generate] Acquiring advisory lock key=%s", lock_key)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+
+        # Double-check after acquiring the lock.
+        cached = _fetch_recommendation()
+        if cached and cached.expires_at and cached.expires_at > now:
+            logger.info(
+                "[get_or_generate] Cache hit after lock crop=%s municipality=%s (expires_at=%s)",
+                crop_id,
+                dane,
+                cached.expires_at,
+            )
+            return self._build_response(crop, municipality, cached, cached=True)
 
         context = self.prediction_service.get_crop_recommendation_context(
             db,
@@ -173,8 +222,39 @@ class CropRecommendationCacheService:
             )
             db.add(cached)
 
-        db.commit()
-        db.refresh(cached)
+        try:
+            db.commit()
+            db.refresh(cached)
+        except IntegrityError:
+            db.rollback()
+            logger.warning(
+                "[get_or_generate] Race condition detected crop=%s municipality=%s, fetching existing recommendation",
+                crop_id,
+                dane,
+            )
+            cached = _fetch_recommendation()
+            if cached is None:
+                logger.error("[get_or_generate] Could not fetch existing recommendation crop=%s municipality=%s after race", crop_id, dane)
+                return {
+                    "crop_id": crop_id,
+                    "crop_name": crop.name,
+                    "municipality_id": dane,
+                    "municipality_name": municipality.name,
+                    "text": llm_result.get("text", ""),
+                    "cached": False,
+                    "generated_at": None,
+                    "expires_at": None,
+                    "provider": llm_result.get("provider"),
+                    "model": llm_result.get("model"),
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "tokens_total": tokens_total,
+                    "latency_ms": llm_result.get("latency_ms"),
+                    "status": "success",
+                    "error": None,
+                }
+            return self._build_response(crop, municipality, cached, cached=True)
+
         logger.info(
             "[get_or_generate] Saved recommendation crop=%s municipality=%s (expires_at=%s)",
             crop_id,

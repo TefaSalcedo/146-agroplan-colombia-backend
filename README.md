@@ -706,3 +706,8 @@ docker compose exec api python -c "from app.services.model_loader import get_mod
 docker compose down -v
 docker compose up -d --build
 ```
+
+## Licencia
+
+Este proyecto está licenciado bajo la [Apache License 2.0](LICENSE).
+

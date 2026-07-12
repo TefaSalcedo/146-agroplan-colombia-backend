@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.middleware.rate_limit import GeneralRateLimitMiddleware
 from app.logger import configure_logging, get_logger
 from app.routers import (
     municipalities,
@@ -89,6 +90,8 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
+
+app.add_middleware(GeneralRateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

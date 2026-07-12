@@ -45,6 +45,7 @@ class LLMService:
         self.timeout = settings.llm_timeout_seconds
         self._round_robin_index = 0
         self._round_robin_lock = threading.Lock()
+        self._last_provider_model: Optional[tuple[str, str]] = None
 
     def _openrouter_config(self) -> Optional[Dict[str, Any]]:
         models = settings.openrouter_models_list
@@ -68,6 +69,28 @@ class LLMService:
             "base_url": "https://api.groq.com/openai/v1",
         }
 
+    def _cerebras_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.cerebras_models_list
+        if not settings.cerebras_api_key or not models:
+            return None
+        return {
+            "provider": "cerebras",
+            "api_key": settings.cerebras_api_key,
+            "models": models,
+            "base_url": "https://api.cerebras.ai/v1",
+        }
+
+    def _nvidia_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.nvidia_models_list
+        if not settings.nvidia_api_key or not models:
+            return None
+        return {
+            "provider": "nvidia",
+            "api_key": settings.nvidia_api_key,
+            "models": models,
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        }
+
     def _get_model_pool(self) -> List[Dict[str, Any]]:
         """Return a flat list of all configured (provider, model) entries.
 
@@ -77,43 +100,48 @@ class LLMService:
         """
         pool: List[Dict[str, Any]] = []
 
-        openrouter = self._openrouter_config()
-        groq = self._groq_config()
-
+        providers = [
+            self._openrouter_config(),
+            self._groq_config(),
+            self._cerebras_config(),
+            self._nvidia_config(),
+        ]
+        configured = [provider for provider in providers if provider]
         primary = settings.llm_provider.lower()
-        preferred = openrouter if primary == "openrouter" else groq
-        fallback = groq if primary == "openrouter" else openrouter
+        configured.sort(key=lambda provider: 0 if provider["provider"] == primary else 1)
 
-        preferred_models = preferred["models"] if preferred else []
-        fallback_models = fallback["models"] if fallback else []
-        max_len = max(len(preferred_models), len(fallback_models))
-
-        for i in range(max_len):
-            if i < len(preferred_models):
-                pool.append({
-                    "provider": preferred["provider"],
-                    "api_key": preferred["api_key"],
-                    "base_url": preferred["base_url"],
-                    "model": preferred_models[i],
-                })
-            if i < len(fallback_models):
-                pool.append({
-                    "provider": fallback["provider"],
-                    "api_key": fallback["api_key"],
-                    "base_url": fallback["base_url"],
-                    "model": fallback_models[i],
-                })
+        max_len = max((len(provider["models"]) for provider in configured), default=0)
+        for index in range(max_len):
+            for provider in configured:
+                if index < len(provider["models"]):
+                    pool.append({
+                        "provider": provider["provider"],
+                        "api_key": provider["api_key"],
+                        "base_url": provider["base_url"],
+                        "model": provider["models"][index],
+                    })
 
         return pool
 
     def _select_next_model(self, pool: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Pick the next model in the round-robin sequence."""
+        """Pick a model while avoiding the last provider/model pair."""
         if not pool:
             return None
         with self._round_robin_lock:
-            idx = self._round_robin_index % len(pool)
-            self._round_robin_index = (self._round_robin_index + 1) % len(pool)
-            return pool[idx]
+            pool_size = len(pool)
+            for offset in range(pool_size):
+                idx = (self._round_robin_index + offset) % pool_size
+                candidate = pool[idx]
+                pair = (candidate["provider"], candidate["model"])
+                if pair != self._last_provider_model or pool_size == 1:
+                    self._round_robin_index = (idx + 1) % pool_size
+                    return candidate
+            return pool[0]
+
+    def _record_model_execution(self, provider: str, model: str) -> None:
+        """Remember the provider/model pair that was actually called."""
+        with self._round_robin_lock:
+            self._last_provider_model = (provider, model)
 
     def _build_system_prompt(self, base_prompt: str, response_format: Optional[Dict] = None) -> str:
         """Append Spanish-language instruction unless the response must be structured JSON."""
@@ -210,26 +238,47 @@ class LLMService:
             return {"error": f"unexpected: {e}"}
 
     def _try_repair_json(self, content: str) -> Optional[Dict]:
-        """Attempt one round of JSON repair."""
+        """Attempt one round of JSON repair.
+
+        Tries direct parsing first, then extracts JSON from markdown code
+        blocks. Returns None when no valid JSON can be recovered.
+        """
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            if "```json" in content:
-                start = content.index("```json") + 7
-                end = content.index("```", start)
-                try:
-                    return json.loads(content[start:end].strip())
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            if "```" in content:
-                start = content.index("```") + 3
-                end = content.index("```", start)
-                try:
-                    return json.loads(content[start:end].strip())
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return None
+            pass
+
+        # Try to extract JSON from markdown code blocks
+        for marker in ("```json", "```"):
+            start = content.find(marker)
+            if start == -1:
+                continue
+            block_start = start + len(marker)
+            end = content.find("```", block_start)
+            if end == -1:
+                continue
+            candidate = content[block_start:end].strip()
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Last resort: try to find the first `{`..`}` or `[`..`]` block that
+        # parses as JSON. This catches models that wrap JSON in explanatory text.
+        for start_char, end_char in (("{", "}"), ("[", "]")):
+            start = content.find(start_char)
+            if start == -1:
+                continue
+            end = content.rfind(end_char)
+            if end == -1 or end <= start:
+                continue
+            candidate = content[start:end + 1].strip()
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        return None
 
     def generate_explanation(
         self,
@@ -257,10 +306,12 @@ class LLMService:
             + "\n\n"
             "REGLAS DE CONTENIDO:\n"
             "1. Explica por qué el cultivo puede servir o no para ese municipio.\n"
-            "2. Menciona los factores de clima más importantes en palabras sencillas.\n"
-            "3. Da UNA recomendación concreta y útil para la finca.\n"
-            "4. No inventes datos. Usa solo la información proporcionada.\n"
-            "5. Máximo 150 palabras."
+            "2. Usa los campos *_simple del cultivo (soil_type_simple, ideal_temperature_simple, etc.) "
+            "para describir clima y tierra. Si 'is_perennial' es true, menciona el tiempo de establecimiento.\n"
+            "3. Menciona los factores de clima más importantes en palabras sencillas.\n"
+            "4. Da UNA recomendación concreta y útil para la finca.\n"
+            "5. No inventes datos. Usa solo la información proporcionada.\n"
+            "6. Máximo 150 palabras."
         )
 
         user_content = json.dumps(
@@ -320,6 +371,7 @@ class LLMService:
             model = entry["model"]
             logger.info("[generate_explanation] Calling LLM provider=%s model=%s", provider["provider"], model)
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider, model, system_prompt, user_content
             )
@@ -386,7 +438,8 @@ class LLMService:
             "3. Para el tiempo de cosecha usa el campo 'days_to_harvest_text'. "
             "Si 'is_perennial' es true, menciona también el 'establishment_period_text' como el tiempo "
             "que tarda el árbol en empezar a producir de forma estable.\n"
-            "4. Para describir la tierra usa el campo 'soil_type_simple', no 'soil_type'.\n"
+            "4. Para describir la tierra usa 'soil_type_simple'; para el clima usa "
+            "'ideal_temperature_simple', 'humidity_simple', 'precipitation_simple' y 'altitude_simple'.\n"
             "5. Da cuidados básicos de tierra y riego.\n"
             "6. Menciona advertencias si el clima o la tierra no son adecuados.\n"
             "7. No inventes datos; usa solo la información proporcionada."
@@ -512,7 +565,8 @@ class LLMService:
             + "\n\n"
             "REGLAS DE CONTENIDO:\n"
             "1. No inventes datos. Usa únicamente la información del cultivo proporcionada.\n"
-            "2. Usa 'soil_type_simple' para describir la tierra, no 'soil_type'.\n"
+            "2. Usa 'soil_type_simple' para describir la tierra y 'ideal_temperature_simple', "
+            "'humidity_simple', 'precipitation_simple' y 'altitude_simple' para el clima.\n"
             "3. Usa 'days_to_harvest_text' para el tiempo de cosecha. Si 'is_perennial' es true, "
             "usa 'establishment_period_text' para explicar cuánto tarda el árbol en empezar a producir.\n"
             "4. La guía debe tener un resumen corto y varias secciones con título y contenido.\n"
@@ -567,6 +621,7 @@ class LLMService:
             model = entry["model"]
             logger.info("[generate_national_crop_guide] Calling LLM provider=%s model=%s", provider["provider"], model)
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider,
                 model,
@@ -751,6 +806,7 @@ class LLMService:
                 model,
             )
 
+            self._record_model_execution(provider["provider"], model)
             result = self._call_provider(
                 provider,
                 model,

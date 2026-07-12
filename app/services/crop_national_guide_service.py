@@ -11,10 +11,18 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.logger import get_logger
 from app.models import Crop, CropNationalGuide
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
-from app.utils.crop_formatting import format_duration_days, simplify_soil_terms
+from app.utils.crop_formatting import (
+    format_duration_days,
+    simplify_soil_terms,
+    simplify_temperature,
+    simplify_humidity,
+    simplify_precipitation,
+    simplify_altitude,
+)
 
 logger = get_logger("app.services.crop_national_guide_service")
 
@@ -42,9 +50,13 @@ class CropNationalGuideService:
             "soil_type": crop.soil_type,
             "soil_type_simple": simplify_soil_terms(crop.soil_type or ""),
             "ideal_temperature": crop.ideal_temperature,
+            "ideal_temperature_simple": simplify_temperature(crop.ideal_temperature or ""),
             "humidity": crop.humidity,
+            "humidity_simple": simplify_humidity(crop.humidity or ""),
             "precipitation": crop.precipitation,
+            "precipitation_simple": simplify_precipitation(crop.precipitation or ""),
             "altitude": crop.altitude,
+            "altitude_simple": simplify_altitude(crop.altitude or ""),
             "irrigation": crop.irrigation,
             "substrates": crop.substrates or [],
             "planting_months": crop.planting_months or [],
@@ -67,6 +79,25 @@ class CropNationalGuideService:
         generates a new one with the LLM, persists it and returns it.
         """
         now = datetime.now(timezone.utc)
+
+        if not get_settings().llm_enabled:
+            return {
+                "crop_id": crop.id,
+                "crop_name": crop.name,
+                "summary": "",
+                "sections": [],
+                "generated_at": None,
+                "expires_at": None,
+                "cached": False,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
 
         cached = (
             db.query(CropNationalGuide)

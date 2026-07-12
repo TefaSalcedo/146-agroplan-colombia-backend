@@ -105,8 +105,8 @@ def downgrade() -> None:
 
     for crop_id, soil_type in previous_soil.items():
         op.execute(
-            sa.text("UPDATE crops SET soil_type = :soil_type WHERE id = :crop_id"),
-            {"crop_id": crop_id, "soil_type": soil_type}
+            sa.text("UPDATE crops SET soil_type = :soil_type WHERE id = :crop_id")
+            .bindparams(crop_id=crop_id, soil_type=soil_type)
         )
 
     session.commit()

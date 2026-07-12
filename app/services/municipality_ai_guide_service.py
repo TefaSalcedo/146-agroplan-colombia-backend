@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -21,6 +23,7 @@ from app.models import (
     MunicipalityCurrentWeather,
     MunicipalityMonthlyClimateForecast,
 )
+from app.config import get_settings
 from app.logger import get_logger
 from app.services.crop_catalog import CropCatalog
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
@@ -260,31 +263,80 @@ class MunicipalityAIGuideService:
         municipality: Municipality,
         force: bool = False,
     ) -> Dict[str, Any]:
-        """Return an AI guide for the municipality."""
-        now = datetime.now(timezone.utc)
+        """Return an AI guide for the municipality.
 
-        cached = (
-            db.query(MunicipalityAIGuide)
-            .filter(MunicipalityAIGuide.municipality_dane_code == municipality.dane_code)
-            .first()
-        )
+        Uses an advisory lock to prevent concurrent requests from generating
+        duplicate guides for the same municipality.
+        """
+        now = datetime.now(timezone.utc)
+        dane = municipality.dane_code
+
+        if not get_settings().llm_enabled:
+            return {
+                "municipality_id": dane,
+                "municipality_name": municipality.name,
+                "summary": "",
+                "alternative_crops": [],
+                "farming_systems": [],
+                "soil_and_fertilizer": [],
+                "generated_at": None,
+                "expires_at": None,
+                "cached": False,
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "tokens_total": None,
+                "latency_ms": None,
+                "status": "llm_disabled",
+                "error": None,
+            }
+
+        def _fetch_guide() -> Optional[MunicipalityAIGuide]:
+            return (
+                db.query(MunicipalityAIGuide)
+                .filter(MunicipalityAIGuide.municipality_dane_code == dane)
+                .first()
+            )
+
+        cached = _fetch_guide()
 
         if cached and not force:
             if cached.expires_at and cached.expires_at > now:
                 logger.info(
                     "[get_or_generate] Returning cached AI guide for municipality=%s (expires_at=%s)",
-                    municipality.dane_code,
+                    dane,
                     cached.expires_at,
                 )
                 return self._build_response(municipality, cached, cached=True)
             logger.info(
                 "[get_or_generate] Cached AI guide expired for municipality=%s, regenerating",
-                municipality.dane_code,
+                dane,
             )
         else:
             logger.info(
                 "[get_or_generate] No cached AI guide for municipality=%s, generating",
-                municipality.dane_code,
+                dane,
+            )
+
+        # Advisory lock scoped to this municipality to avoid race-condition inserts.
+        lock_key = abs(hash(f"municipality_ai_guide:{dane}")) % (2**31)
+        logger.debug("[get_or_generate] Acquiring advisory lock key=%s", lock_key)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+
+        # Double-check after acquiring the lock.
+        cached = _fetch_guide()
+        if cached and not force:
+            if cached.expires_at and cached.expires_at > now:
+                logger.info(
+                    "[get_or_generate] Cache hit after lock for municipality=%s (expires_at=%s)",
+                    dane,
+                    cached.expires_at,
+                )
+                return self._build_response(municipality, cached, cached=True)
+            logger.info(
+                "[get_or_generate] Cached AI guide expired after lock for municipality=%s, regenerating",
+                dane,
             )
 
         context = self._build_context(db, municipality)
@@ -376,11 +428,42 @@ class MunicipalityAIGuideService:
             )
             db.add(cached)
 
-        db.commit()
-        db.refresh(cached)
+        try:
+            db.commit()
+            db.refresh(cached)
+        except IntegrityError:
+            db.rollback()
+            logger.warning(
+                "[get_or_generate] Race condition detected for municipality=%s, fetching existing guide",
+                dane,
+            )
+            cached = _fetch_guide()
+            if cached is None:
+                logger.error("[get_or_generate] Could not fetch existing guide for municipality=%s after race", dane)
+                return {
+                    "municipality_id": dane,
+                    "municipality_name": municipality.name,
+                    "summary": "",
+                    "alternative_crops": [],
+                    "farming_systems": [],
+                    "soil_and_fertilizer": [],
+                    "generated_at": None,
+                    "expires_at": None,
+                    "cached": False,
+                    "provider": llm_result.get("provider"),
+                    "model": llm_result.get("model"),
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "tokens_total": tokens_total,
+                    "latency_ms": llm_result.get("latency_ms"),
+                    "status": "success",
+                    "error": None,
+                }
+            return self._build_response(municipality, cached, cached=True)
+
         logger.info(
             "[get_or_generate] Saved AI guide for municipality=%s (expires_at=%s)",
-            municipality.dane_code,
+            dane,
             expires_at,
         )
 

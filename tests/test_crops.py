@@ -34,7 +34,11 @@ def test_get_crop_by_id(client):
     assert data["id"] == "aguacate"
     assert data["name"] == "Aguacate"
     assert data["scientific_name"] == "Persea americana"
-    assert data["days_to_harvest"] == 365
+    assert data["days_to_harvest"] == 180
+    assert data["days_to_harvest_text"] == "6 meses"
+    assert data["establishment_period_days"] == 2190
+    assert data["establishment_period_text"] == "6 años"
+    assert data["is_perennial"] is True
 
 
 def test_get_crop_not_found(client):
@@ -53,7 +57,7 @@ def test_get_crop_recommendation(client):
     assert data["municipality_name"] == "MEDELL\u00cdN"
     assert "text" in data
     assert "status" in data
-    assert data["status"] in ("success", "llm_unavailable")
+    assert data["status"] in ("success", "llm_unavailable", "llm_disabled")
     assert "provider" in data
     assert "model" in data
     assert "tokens_in" in data

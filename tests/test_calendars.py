@@ -79,7 +79,7 @@ def test_calendar_batch_explanation_per_crop(client):
         assert "explanation" in result
         explanation = result["explanation"]
         assert "status" in explanation
-        assert explanation["status"] in ("success", "llm_unavailable")
+        assert explanation["status"] in ("success", "llm_unavailable", "llm_disabled")
         assert "tokens_in" in explanation
         assert "tokens_out" in explanation
         assert "tokens_total" in explanation

@@ -4,7 +4,14 @@ from sqlalchemy.orm import Session
 
 from app.models import Crop
 from app.schemas.crop import CropResponse, CropResponseLite, GrowthStage, Tip
-from app.utils.crop_formatting import format_duration_days, simplify_soil_terms
+from app.utils.crop_formatting import (
+    format_duration_days,
+    simplify_soil_terms,
+    simplify_temperature,
+    simplify_humidity,
+    simplify_precipitation,
+    simplify_altitude,
+)
 
 
 class CropCatalog:
@@ -30,9 +37,13 @@ class CropCatalog:
             soil_type=crop.soil_type or "",
             soil_type_simple=simplify_soil_terms(crop.soil_type or ""),
             ideal_temperature=crop.ideal_temperature or "",
+            ideal_temperature_simple=simplify_temperature(crop.ideal_temperature or ""),
             humidity=crop.humidity or "",
+            humidity_simple=simplify_humidity(crop.humidity or ""),
             precipitation=crop.precipitation or "",
+            precipitation_simple=simplify_precipitation(crop.precipitation or ""),
             altitude=crop.altitude or "",
+            altitude_simple=simplify_altitude(crop.altitude or ""),
             irrigation=crop.irrigation or "",
             substrates=crop.substrates or [],
             planting_months=crop.planting_months or [],
