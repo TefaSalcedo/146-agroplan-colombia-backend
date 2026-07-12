@@ -15,6 +15,9 @@ mkdir -p /app/.cache/huggingface
 chown -R appuser:appgroup /app/.cache 2>/dev/null || true
 chmod -R 775 /app/.cache 2>/dev/null || true
 
+# Run database migrations before starting the application.
+su -s /bin/sh appuser -c 'alembic upgrade head' || true
+
 # Drop privileges and execute the main command as appuser
 exec su -s /bin/sh appuser -c 'exec "$@"' sh "$@"
 
