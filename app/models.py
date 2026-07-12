@@ -273,6 +273,34 @@ class CropNationalGuide(Base):
 
 
 # ---------------------------------------------------------------------------
+# Cached crop-municipality LLM recommendation
+# ---------------------------------------------------------------------------
+class CropMunicipalityRecommendation(Base):
+    __tablename__ = "crop_municipality_recommendations"
+    __table_args__ = (
+        UniqueConstraint("crop_id", "municipality_dane_code", name="uq_crop_municipality_recommendation"),
+        Index("ix_crop_municipality_recommendation_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    crop_id = Column(String(50), ForeignKey("crops.id"), nullable=False, index=True)
+    municipality_dane_code = Column(String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    provider = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    tokens_in = Column(Integer, nullable=True)
+    tokens_out = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    version = Column(String(20), nullable=False, default="1.0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
 # Municipality AI guide
 # ---------------------------------------------------------------------------
 class MunicipalityAIGuide(Base):

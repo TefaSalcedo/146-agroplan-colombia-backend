@@ -13,7 +13,8 @@ from app.schemas.crop import (
 from app.schemas.system import ErrorResponse
 from app.services.crop_catalog import CropCatalog
 from app.services.crop_national_guide_service import get_crop_national_guide_service
-from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
+from app.services.crop_recommendation_service import get_crop_recommendation_cache_service
+from app.services.llm_service import get_llm_service
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.prediction_service import PredictionService
 
@@ -23,6 +24,7 @@ municipality_catalog = MunicipalityCatalog()
 prediction_service = PredictionService()
 llm_service = get_llm_service()
 guide_service = get_crop_national_guide_service()
+recommendation_service = get_crop_recommendation_cache_service()
 logger = get_logger("app.routers.crops")
 
 
@@ -133,58 +135,19 @@ def get_crop_recommendation(
         logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    context = prediction_service.get_crop_recommendation_context(
-        db,
-        crop_id=crop_id,
-        municipality_id=municipality_id,
-    )
-    if not context:
-        logger.error("[endpoint] Could not build recommendation context")
-        raise HTTPException(status_code=500, detail="Could not build recommendation context")
-
-    llm_result = llm_service.generate_crop_recommendation(
-        crop=context["crop"],
-        municipality=context["municipality"],
-        climate_summary=context["climate_summary"],
-        soil_summary=context["soil_summary"],
+    recommendation = recommendation_service.get_or_generate(
+        db=db,
+        crop=crop,
+        municipality=municipality,
     )
 
-    tokens_in = llm_result.get("tokens_in")
-    tokens_out = llm_result.get("tokens_out")
-    tokens_total = None
-    if tokens_in is not None and tokens_out is not None:
-        tokens_total = tokens_in + tokens_out
-
-    log_id = log_llm_generation(
-        db,
-        provider=llm_result.get("provider"),
-        model=llm_result.get("model"),
-        prompt_schema_version=PROMPT_SCHEMA_VERSION,
-        context_summary=f"crop_recommendation:{crop_id}:{municipality_id}",
-        response_json={"text": llm_result.get("text")},
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        latency_ms=llm_result.get("latency_ms"),
-        status=llm_result.get("status", "llm_unavailable"),
-        error_message=llm_result.get("error"),
+    logger.info(
+        "[endpoint] GET /crops/{crop_id}/recommendations/{municipality_id} returning recommendation for crop_id=%s municipality_id=%s cached=%s",
+        crop_id,
+        municipality_id,
+        recommendation.get("cached"),
     )
-    logger.debug("[endpoint] LLM generation logged id=%s", log_id)
-
-    return CropRecommendationResponse(
-        crop_id=crop_id,
-        crop_name=crop.name,
-        municipality_id=municipality_id,
-        municipality_name=municipality.name,
-        text=llm_result.get("text", ""),
-        provider=llm_result.get("provider"),
-        model=llm_result.get("model"),
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        tokens_total=tokens_total,
-        latency_ms=llm_result.get("latency_ms"),
-        status=llm_result.get("status", "llm_unavailable"),
-        error=llm_result.get("error"),
-    )
+    return CropRecommendationResponse(**recommendation)
 
 
 @router.get(
