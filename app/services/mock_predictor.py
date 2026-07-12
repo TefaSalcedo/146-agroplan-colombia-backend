@@ -1,23 +1,23 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
-import random
 from sqlalchemy.orm import Session
 
-from app.models import MunicipalityClimateForecast
-from app.services.municipality_catalog import MunicipalityCatalog
+from app.models import MunicipalityClimateForecast, Municipality, Department
 
-municipality_catalog = MunicipalityCatalog()
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def get_municipality_climate_summary(db: Session, municipality_id: str) -> Dict:
     """Compute average climate values from stored forecasts for a municipality."""
-    today = datetime.utcnow().date()
+    today = _utcnow().date()
     future_cutoff = today + timedelta(days=90)
 
     records = (
         db.query(MunicipalityClimateForecast)
-        .filter(MunicipalityClimateForecast.municipality_id == municipality_id)
+        .filter(MunicipalityClimateForecast.municipality_dane_code == municipality_id)
         .filter(MunicipalityClimateForecast.forecast_date >= today)
         .filter(MunicipalityClimateForecast.forecast_date <= future_cutoff)
         .all()
@@ -44,57 +44,52 @@ class MockPredictor:
     """Mock predictor for zoning and calendar predictions.
 
     This provides mock predictions based on simple rules while the real ML models
-    are being trained. When models are available, this will be replaced by model_loader.py.
+    are being integrated. When models are available, this will be replaced by
+    the prediction service.
     """
 
     _SUITABILITY_RULES = {
-        "cafe": {
-            "min_alt": 1200,
-            "max_alt": 2000,
-            "min_temp": 18,
-            "max_temp": 24,
-        },
-        "maiz": {
-            "min_alt": 0,
-            "max_alt": 2800,
-            "min_temp": 20,
-            "max_temp": 30,
-        },
-        "frijol": {
-            "min_alt": 1000,
-            "max_alt": 2400,
-            "min_temp": 15,
-            "max_temp": 27,
-        },
         "aguacate": {
             "min_alt": 1500,
             "max_alt": 2500,
             "min_temp": 16,
             "max_temp": 24,
         },
-        "papa": {
-            "min_alt": 2000,
-            "max_alt": 3200,
-            "min_temp": 14,
-            "max_temp": 18,
-        },
-        "tomate": {
+        "algodon": {
             "min_alt": 0,
-            "max_alt": 2000,
-            "min_temp": 18,
-            "max_temp": 25,
-        },
-        "platano": {
-            "min_alt": 0,
-            "max_alt": 1500,
-            "min_temp": 25,
+            "max_alt": 1000,
+            "min_temp": 21,
             "max_temp": 30,
         },
-        "cacao": {
+        "cana_panelera": {
             "min_alt": 0,
-            "max_alt": 800,
-            "min_temp": 24,
+            "max_alt": 1800,
+            "min_temp": 20,
             "max_temp": 28,
+        },
+        "cebolla": {
+            "min_alt": 0,
+            "max_alt": 2800,
+            "min_temp": 13,
+            "max_temp": 25,
+        },
+        "fresa": {
+            "min_alt": 1200,
+            "max_alt": 2600,
+            "min_temp": 10,
+            "max_temp": 22,
+        },
+        "pina": {
+            "min_alt": 0,
+            "max_alt": 1200,
+            "min_temp": 20,
+            "max_temp": 30,
+        },
+        "soya": {
+            "min_alt": 0,
+            "max_alt": 1500,
+            "min_temp": 20,
+            "max_temp": 30,
         },
     }
 
@@ -129,8 +124,12 @@ class MockPredictor:
         min_precipitation = 1.0
         precip_match = climate["has_data"] and climate["avg_precipitation"] >= min_precipitation
 
-        municipality = municipality_catalog.get_municipality_by_id(db, municipality_id)
-        municipality_altitude = municipality.altitude if municipality and municipality.altitude is not None else 0
+        municipality = db.query(Municipality).filter(
+            Municipality.dane_code == municipality_id
+        ).first()
+        municipality_altitude = (
+            municipality.altitude if municipality and municipality.altitude is not None else 0
+        )
         altitude_match = rules["min_alt"] <= municipality_altitude <= rules["max_alt"]
 
         soil_match = True
@@ -138,13 +137,13 @@ class MockPredictor:
         matches = sum([temp_match, precip_match, altitude_match])
         if matches >= 3:
             suitability = "high"
-            confidence = random.uniform(0.85, 0.95)
+            confidence = 0.90
         elif matches >= 2:
             suitability = "medium"
-            confidence = random.uniform(0.70, 0.85)
+            confidence = 0.75
         else:
             suitability = "low"
-            confidence = random.uniform(0.50, 0.70)
+            confidence = 0.60
 
         return {
             "crop_id": crop_id,
@@ -169,6 +168,8 @@ class MockPredictor:
         planting_months: list[int],
     ) -> Dict:
         """Predict calendar planting ratings for a month (mock)."""
+        import random
+
         days = []
         seed = hash(f"{crop_id}-{municipality_id}-{month}-{year}")
         random.seed(seed)
@@ -188,8 +189,6 @@ class MockPredictor:
                 rand_val = random.random()
                 if rand_val > 0.7:
                     rating = "acceptable"
-                elif rand_val > 0.4:
-                    rating = "notRecommended"
                 else:
                     rating = "notRecommended"
 
