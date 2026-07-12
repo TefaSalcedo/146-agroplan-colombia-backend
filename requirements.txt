@@ -15,7 +15,6 @@ python-dotenv>=1.0.1
 pyarrow>=25.0.0
 lightgbm>=4.6.0
 xgboost>=3.3.0
-catboost>=1.2.9
 huggingface-hub>=0.26.0
 tenacity>=9.0.0
 pytz>=2024.2
