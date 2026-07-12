@@ -10,14 +10,12 @@ from app.schemas.alerts import ForecastDayResponse
 from app.schemas.forecast import MonthlyForecastResponse, MonthlyForecastItem
 from app.schemas.system import ErrorResponse
 from app.services.climate_data_service import ClimateDataService
-from app.services.open_meteo import OpenMeteoService
 
 from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 logger = get_logger("app.routers.forecast")
 climate_data_service = ClimateDataService()
-open_meteo_service = OpenMeteoService()
 
 
 @router.get(
@@ -96,9 +94,9 @@ def get_monthly_forecast(
         logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    raw = open_meteo_service.get_monthly_seasonal_forecast(
-        lat=municipality.lat,
-        lng=municipality.lng,
+    records = climate_data_service.get_monthly_forecast_records(
+        db=db,
+        municipality=municipality,
         months=months,
     )
 
@@ -108,39 +106,22 @@ def get_monthly_forecast(
     ]
 
     forecasts = []
-    for record in raw:
-        forecast_month = record.get("forecast_month")
+    for record in records:
+        forecast_month = record.forecast_month
         if not forecast_month:
             continue
-
-        temp_anomaly = record.get("temp_anomaly")
-        precip_anomaly = record.get("precipitation_anomaly")
-
-        trend_parts = []
-        if temp_anomaly is not None:
-            if temp_anomaly > 0.5:
-                trend_parts.append("warmer")
-            elif temp_anomaly < -0.5:
-                trend_parts.append("cooler")
-        if precip_anomaly is not None:
-            if precip_anomaly > 10:
-                trend_parts.append("wetter")
-            elif precip_anomaly < -10:
-                trend_parts.append("drier")
-
-        trend = "_".join(trend_parts) if trend_parts else "neutral"
 
         forecasts.append(
             MonthlyForecastItem(
                 forecast_month=forecast_month,
                 month_name=spanish_months[forecast_month.month - 1],
-                temp_mean=record.get("temp_mean"),
-                temp_anomaly=temp_anomaly,
-                precipitation=record.get("precipitation"),
-                precipitation_anomaly=precip_anomaly,
-                trend=trend,
-                source=record.get("source", "open-meteo-seasonal"),
-                fetched_at=record.get("fetched_at"),
+                temp_mean=record.temp_mean,
+                temp_anomaly=record.temp_anomaly,
+                precipitation=record.precipitation,
+                precipitation_anomaly=record.precipitation_anomaly,
+                trend=record.trend or "neutral",
+                source=record.source,
+                fetched_at=record.fetched_at.isoformat() if record.fetched_at else None,
             )
         )
 
