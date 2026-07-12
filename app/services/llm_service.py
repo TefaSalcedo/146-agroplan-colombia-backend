@@ -257,10 +257,12 @@ class LLMService:
             + "\n\n"
             "REGLAS DE CONTENIDO:\n"
             "1. Explica por qué el cultivo puede servir o no para ese municipio.\n"
-            "2. Menciona los factores de clima más importantes en palabras sencillas.\n"
-            "3. Da UNA recomendación concreta y útil para la finca.\n"
-            "4. No inventes datos. Usa solo la información proporcionada.\n"
-            "5. Máximo 150 palabras."
+            "2. Usa los campos *_simple del cultivo (soil_type_simple, ideal_temperature_simple, etc.) "
+            "para describir clima y tierra. Si 'is_perennial' es true, menciona el tiempo de establecimiento.\n"
+            "3. Menciona los factores de clima más importantes en palabras sencillas.\n"
+            "4. Da UNA recomendación concreta y útil para la finca.\n"
+            "5. No inventes datos. Usa solo la información proporcionada.\n"
+            "6. Máximo 150 palabras."
         )
 
         user_content = json.dumps(
