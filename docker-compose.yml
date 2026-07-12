@@ -13,7 +13,7 @@ services:
       - ML_DATA_PATH=./data
       - ML_MODELS_PATH=./models
       - API_V1_PREFIX=/api/v1
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
       - ENABLE_CLIMATE_SYNC=${ENABLE_CLIMATE_SYNC:-true}
       - CLIMATE_SYNC_HOUR=${CLIMATE_SYNC_HOUR:-3}
       - CLIMATE_SYNC_MINUTE=${CLIMATE_SYNC_MINUTE:-0}
