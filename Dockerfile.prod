@@ -78,9 +78,10 @@ USER appuser
 EXPOSE 8000
 
 # Simple health check so orchestrators can verify the container is ready.
+# Render injects PORT dynamically; fall back to 8000 for local runs.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/api/v1/health')" || exit 1
 
-# Run with a single worker by default. For horizontal scaling, run more replicas
-# or override the command in docker-compose.yml / k8s.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render (and other PaaS providers) set the PORT env variable dynamically.
+# Default to 8000 so local/docker-compose usage keeps working.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
