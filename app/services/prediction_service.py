@@ -22,7 +22,14 @@ from app.services.crop_catalog import CropCatalog
 from app.services.feature_builder import build_yield_features, build_zoning_features
 from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
 from app.services.mock_predictor import MockPredictor
-from app.utils.crop_formatting import format_duration_days, simplify_soil_terms
+from app.utils.crop_formatting import (
+    format_duration_days,
+    simplify_soil_terms,
+    simplify_temperature,
+    simplify_humidity,
+    simplify_precipitation,
+    simplify_altitude,
+)
 
 settings = get_settings()
 logger = get_logger("app.services.prediction_service")
@@ -268,6 +275,22 @@ class PredictionService:
     @staticmethod
     def _simplify_soil(text: str) -> str:
         return simplify_soil_terms(text)
+
+    @staticmethod
+    def _simplify_temperature(text: str) -> str:
+        return simplify_temperature(text)
+
+    @staticmethod
+    def _simplify_humidity(text: str) -> str:
+        return simplify_humidity(text)
+
+    @staticmethod
+    def _simplify_precipitation(text: str) -> str:
+        return simplify_precipitation(text)
+
+    @staticmethod
+    def _simplify_altitude(text: str) -> str:
+        return simplify_altitude(text)
 
     def _get_model_loader(self):
         """Lazily get the model loader singleton."""
@@ -1070,9 +1093,13 @@ class PredictionService:
                 "name": crop.name,
                 "scientific_name": crop.scientific_name or "",
                 "ideal_temperature": crop.ideal_temperature or "",
+                "ideal_temperature_simple": self._simplify_temperature(crop.ideal_temperature or ""),
                 "precipitation": crop.precipitation or "",
+                "precipitation_simple": self._simplify_precipitation(crop.precipitation or ""),
                 "humidity": crop.humidity or "",
+                "humidity_simple": self._simplify_humidity(crop.humidity or ""),
                 "altitude": crop.altitude or "",
+                "altitude_simple": self._simplify_altitude(crop.altitude or ""),
                 "soil_type": crop.soil_type or "",
                 "soil_type_simple": self._simplify_soil(crop.soil_type or ""),
                 "irrigation": crop.irrigation or "",
