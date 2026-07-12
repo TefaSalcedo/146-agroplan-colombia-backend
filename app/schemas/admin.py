@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
+from typing import Optional, List
 
 
 class ClimateSyncLogResponse(BaseModel):
@@ -20,4 +21,47 @@ class ClimateSyncStatusResponse(BaseModel):
 
     last_sync: ClimateSyncLogResponse | None = Field(default=None)
     forecast_records: int = Field(description="Total rows in municipality_climate_forecasts")
-    municipalities_with_forecast: int = Field(description="Number of municipalities with at least one forecast record")
+    municipalities_with_forecast: int = Field(
+        description="Number of municipalities with at least one forecast record"
+    )
+
+
+class ModelReleaseResponse(BaseModel):
+    """Active model release information."""
+
+    id: int
+    model_type: str
+    crop_key: Optional[str] = None
+    model_family: str
+    hf_repo: str
+    hf_revision: str
+    artifact_filename: str
+    is_active: bool
+    sha256: Optional[str] = None
+    preprocessor_version: Optional[str] = None
+
+
+class ModelStatusResponse(BaseModel):
+    """Status of all loaded ML models."""
+
+    models_loaded: bool
+    zoning_models: List[ModelReleaseResponse] = Field(default_factory=list)
+    yield_models: List[ModelReleaseResponse] = Field(default_factory=list)
+    profiles_loaded: bool = Field(default=False, description="Whether reference Parquet profiles are loaded")
+    golden_vectors_passed: Optional[bool] = Field(default=None, description="Whether golden vector validation passed")
+
+
+class CacheStatsResponse(BaseModel):
+    """Prediction cache statistics."""
+
+    total_entries: int
+    active_entries: int
+    expired_entries: int
+    by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class CacheInvalidateRequest(BaseModel):
+    """Request to invalidate cache entries."""
+
+    prediction_type: Optional[str] = Field(default=None, description="Invalidate only this prediction type")
+    scope_key: Optional[str] = Field(default=None, description="Invalidate only this scope")
