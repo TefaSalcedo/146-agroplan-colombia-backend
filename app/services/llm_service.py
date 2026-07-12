@@ -620,6 +620,190 @@ class LLMService:
             "error": "All providers failed",
         }
 
+    def generate_municipality_ai_guide(
+        self,
+        municipality_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate AI-driven recommendations for a municipality.
+
+        Returns structured insights: alternative crops, farming systems and soil/
+        fertilizer advice written in plain Spanish for Colombian farmers.
+        """
+        start = time.time()
+
+        system_prompt = (
+            "Eres un agrónomo colombiano que asesora a campesinos de todo el país. "
+            "Tu trabajo es dar recomendaciones PRÁCTICAS y FÁCILES DE ENTENDER para un "
+            "municipio específico.\n\n"
+            "REGLAS DE LENGUAJE:\n"
+            "1. Usa palabras comunes del campo. NO uses términos técnicos como "
+            "'suelo franco arenoso', 'textura franco', 'pH', 'topografía', 'latitud'.\n"
+            "2. Si necesitas hablar del suelo, di cosas como 'tierra suelta', 'tierra "
+            "pesada', 'tierra que drena bien', 'tierra negra y fértil', etc.\n"
+            "3. Si hablas de altura, di 'esta zona es de montaña baja', 'zona fría', "
+            "'zona templada', 'zona cálida', según corresponda.\n"
+            "4. La temperatura exprésala como 'hace frío', 'hace calor', 'es templado'. "
+            "No uses grados Celsius a menos que sea necesario.\n"
+            "5. Todo en español de Colombia.\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. En 'alternative_crops' sugiere cultivos que NO estén en la lista del "
+            "municipio. Puedes usar tu conocimiento agronómico, datos de FAO/EcoCrop, "
+            "clima, altura y suelo del municipio.\n"
+            "2. En 'farming_systems' recomienda viveros, hidroponía, semilleros, aboneras "
+            "u otros sistemas solo si tienen sentido para el clima y la altura del municipio. "
+            "Si no aplica, indica que no es muy conveniente.\n"
+            "3. En 'soil_and_fertilizer' da consejos sencillos sobre abonos orgánicos, "
+            "cómo mejorar la tierra, cuándo fertilizar, etc.\n\n"
+            "ESTRUCTURA OBLIGATORIA DEL JSON:\n"
+            "{\n"
+            '  "summary": "resumen de 2 o 3 frases",\n'
+            '  "alternative_crops": [\n'
+            '    {"crop_name": "nombre común", "why": "por qué sirve aquí", "confidence": "high|medium|low"}\n'
+            '  ],\n'
+            '  "farming_systems": [\n'
+            '    {"title": "Vivero", "recommendation": "...", "suitable": "yes|partial|no"}\n'
+            '  ],\n'
+            '  "soil_and_fertilizer": [\n'
+            '    {"title": "título", "content": "..."}\n'
+            '  ]\n'
+            "}\n\n"
+            "Las recomendaciones deben ser concretas, seguras y útiles para una persona que "
+            "trabaja directamente la tierra."
+        )
+
+        user_content = json.dumps(
+            {"municipality": municipality_data},
+            ensure_ascii=False,
+            default=str,
+        )
+
+        pool = self._get_model_pool()
+        if not pool:
+            return {
+                "summary": "",
+                "alternative_crops": [],
+                "farming_systems": [],
+                "soil_and_fertilizer": [],
+                "status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": "No LLM providers configured",
+            }
+
+        first_selected = self._select_next_model(pool)
+        start_idx = pool.index(first_selected)
+        ordered_pool = pool[start_idx:] + pool[:start_idx]
+
+        for entry in ordered_pool:
+            provider = {
+                "provider": entry["provider"],
+                "api_key": entry["api_key"],
+                "base_url": entry["base_url"],
+            }
+            model = entry["model"]
+            logger.info(
+                "[generate_municipality_ai_guide] Calling LLM provider=%s model=%s",
+                provider["provider"],
+                model,
+            )
+
+            result = self._call_provider(
+                provider,
+                model,
+                system_prompt,
+                user_content,
+                response_format={"type": "json_object"},
+            )
+
+            if result is None or "error" in result:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s failed: %s",
+                    provider["provider"],
+                    model,
+                    result.get("error") if result else "None",
+                )
+                continue
+
+            latency_ms = int((time.time() - start) * 1000)
+            raw_content = result.get("content", "").strip()
+            if not raw_content:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned empty content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            try:
+                parsed = self._try_repair_json(raw_content)
+            except Exception as exc:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned unparseable content: %s",
+                    provider["provider"],
+                    model,
+                    exc,
+                )
+                continue
+
+            if not parsed or not isinstance(parsed, dict):
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned non-JSON content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            logger.info(
+                "[generate_municipality_ai_guide] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)",
+                provider["provider"],
+                model,
+                latency_ms,
+                result.get("tokens_in"),
+                result.get("tokens_out"),
+            )
+
+            return {
+                "summary": parsed.get("summary", "").strip(),
+                "alternative_crops": self._normalize_list(parsed.get("alternative_crops", [])),
+                "farming_systems": self._normalize_list(parsed.get("farming_systems", [])),
+                "soil_and_fertilizer": self._normalize_list(parsed.get("soil_and_fertilizer", [])),
+                "status": "success",
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+                "latency_ms": latency_ms,
+                "error": None,
+            }
+
+        return {
+            "summary": "",
+            "alternative_crops": [],
+            "farming_systems": [],
+            "soil_and_fertilizer": [],
+            "status": "llm_unavailable",
+            "provider": None,
+            "model": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": "All providers failed",
+        }
+
+    @staticmethod
+    def _normalize_list(value: Any) -> List[Dict[str, Any]]:
+        """Return a clean list of dicts from an LLM JSON field."""
+        if not isinstance(value, list):
+            return []
+        cleaned = []
+        for item in value:
+            if isinstance(item, dict):
+                cleaned.append({str(k): str(v).strip() for k, v in item.items()})
+        return cleaned
+
     def is_configured(self) -> bool:
         """Check if at least one LLM provider is configured."""
         return len(self._get_model_pool()) > 0
