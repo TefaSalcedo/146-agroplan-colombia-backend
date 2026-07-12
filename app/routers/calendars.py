@@ -85,8 +85,8 @@ def predict_calendar(
         "Builds 12-month planting calendar predictions for multiple crops in a municipality.\n\n"
         "Uses XGBoost/LightGBM ensemble (0.65/0.35) when yield models are loaded. "
         "Combines EVA, EcoCrop, FAO and yield signals. Returns top 3 harvest months "
-        "with computed planting windows. Climate data uses Open-Meteo forecast within "
-        "its horizon and historical climatology beyond, with source tracking."
+        "with computed planting windows. Climate data uses Open-Meteo forecast when available; "
+        "otherwise reports missing values with source tracking."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {

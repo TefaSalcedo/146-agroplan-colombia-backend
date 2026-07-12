@@ -45,8 +45,8 @@ class CalendarMonthlyForecast(BaseModel):
     temp_mean: Optional[float] = None
     precipitation: Optional[float] = None
     humidity: Optional[float] = None
-    climate_source: Literal["open_meteo_forecast", "historical_climatology"] = Field(
-        description="Source of climate data for this month"
+    climate_source: Literal["open_meteo_forecast", "not_available"] = Field(
+        description="Source of climate data for this month: open_meteo_forecast or not_available"
     )
 
 

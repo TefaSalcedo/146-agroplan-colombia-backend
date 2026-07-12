@@ -155,9 +155,10 @@ def get_zoning_recommendations(
     summary="Get zoning map for a crop",
     description=(
         "Evaluates all municipalities for a crop and returns suitability scores.\n\n"
-        "Uses CatBoost when its manifest is satisfied and k-NN as controlled fallback. "
-        "The full monthly payload is cached. Returns all municipalities; "
-        "the frontend joins results with DANE geometry for rendering."
+        "Uses the primary LightGBM zoning model when artifacts are loaded; falls back to "
+        "k-NN agroclimatic analogs when critical features are missing. The full payload is "
+        "cached. Returns all municipalities; the frontend joins results with DANE geometry "
+        "for rendering."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {

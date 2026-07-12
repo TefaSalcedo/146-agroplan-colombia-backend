@@ -5,10 +5,10 @@ from pydantic import BaseModel, Field
 
 
 class AlertResponse(BaseModel):
-    id: str
-    level: Literal["info", "warning", "danger"]
-    title: str
-    description: str
+    id: str = Field(description="Alert identifier")
+    level: Literal["info", "warning", "danger"] = Field(description="Severity level")
+    title: str = Field(description="Short alert title")
+    description: str = Field(description="Detailed recommendation for the farmer")
 
 
 class ForecastDayResponse(BaseModel):

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 
@@ -19,11 +20,30 @@ from app.schemas.admin import (
     ModelReleaseResponse,
     CacheStatsResponse,
     CacheInvalidateRequest,
+    CacheInvalidateResponse,
+    PredictionRunResponse,
 )
+from app.schemas.system import ErrorResponse
 from app.services.climate_scheduler import get_last_sync_status
 from app.services.model_loader import get_model_loader
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_UNAUTHORIZED_RESPONSE = {
+    status.HTTP_401_UNAUTHORIZED: {
+        "model": ErrorResponse,
+        "description": "Missing or invalid admin API key.",
+    }
+}
+
+_FORBIDDEN_RESPONSE = {
+    status.HTTP_403_FORBIDDEN: {
+        "model": ErrorResponse,
+        "description": "Admin API key is not valid.",
+    }
+}
+
+_ADMIN_ERROR_RESPONSES = {**_UNAUTHORIZED_RESPONSE, **_FORBIDDEN_RESPONSE}
 
 
 @router.get(
@@ -58,7 +78,13 @@ def climate_sync_status(db: Session = Depends(get_db)):
     "/models/status",
     response_model=ModelStatusResponse,
     summary="Get ML model status",
-    description="Returns the status of all loaded ML models, profiles and golden vector validation.",
+    description=(
+        "Returns the status of all loaded ML models, profiles and golden vector validation.\n\n"
+        "Use cases:\n"
+        "- Verify that production models are ready before serving predictions.\n"
+        "- Inspect active model releases and validation results."
+    ),
+    responses=_ADMIN_ERROR_RESPONSES,
     dependencies=[Depends(verify_admin_api_key)],
 )
 def model_status(db: Session = Depends(get_db)):
@@ -110,7 +136,13 @@ def model_status(db: Session = Depends(get_db)):
     "/cache/stats",
     response_model=CacheStatsResponse,
     summary="Get prediction cache statistics",
-    description="Returns counts of cache entries by type and expiry status.",
+    description=(
+        "Returns counts of cache entries by type and expiry status.\n\n"
+        "Use cases:\n"
+        "- Monitor cache hit rates and memory pressure.\n"
+        "- Decide when to invalidate stale entries."
+    ),
+    responses=_ADMIN_ERROR_RESPONSES,
     dependencies=[Depends(verify_admin_api_key)],
 )
 def cache_stats(db: Session = Depends(get_db)):
@@ -138,12 +170,32 @@ def cache_stats(db: Session = Depends(get_db)):
 
 @router.post(
     "/cache/invalidate",
+    response_model=CacheInvalidateResponse,
     summary="Invalidate prediction cache",
-    description="Invalidates cache entries by type and/or scope. Requires admin API key.",
+    description=(
+        "Deletes cache entries matching the optional filters.\n\n"
+        "If no filters are provided, the entire prediction cache is cleared.\n\n"
+        "Use cases:\n"
+        "- Force model reload after a deployment.\n"
+        "- Clear stale entries for a specific prediction type or scope."
+    ),
+    responses=_ADMIN_ERROR_RESPONSES,
     dependencies=[Depends(verify_admin_api_key)],
 )
 def invalidate_cache(
-    request: CacheInvalidateRequest,
+    request: CacheInvalidateRequest = Body(
+        ...,
+        examples={
+            "invalidate_all": {
+                "summary": "Clear all cache entries",
+                "value": {},
+            },
+            "invalidate_by_type": {
+                "summary": "Clear only zoning cache",
+                "value": {"prediction_type": "zoning"},
+            },
+        },
+    ),
     db: Session = Depends(get_db),
 ):
     query = db.query(PredictionCache)
@@ -156,17 +208,24 @@ def invalidate_cache(
     count = query.delete()
     db.commit()
 
-    return {"invalidated": count}
+    return CacheInvalidateResponse(invalidated=count)
 
 
 @router.get(
     "/audit/recent",
+    response_model=List[PredictionRunResponse],
     summary="Get recent prediction runs",
-    description="Returns the most recent prediction run entries for audit.",
+    description=(
+        "Returns the most recent prediction run entries for audit.\n\n"
+        "Use cases:\n"
+        "- Debug production failures and latency spikes.\n"
+        "- Track fallback usage and cache effectiveness."
+    ),
+    responses=_ADMIN_ERROR_RESPONSES,
     dependencies=[Depends(verify_admin_api_key)],
 )
 def recent_prediction_runs(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of audit entries to return"),
     db: Session = Depends(get_db),
 ):
     runs = (
@@ -177,17 +236,17 @@ def recent_prediction_runs(
     )
 
     return [
-        {
-            "id": run.id,
-            "request_id": run.request_id,
-            "prediction_type": run.prediction_type,
-            "cache_hit": run.cache_hit,
-            "method": run.method,
-            "fallback_used": run.fallback_used,
-            "latency_ms": run.latency_ms,
-            "status": run.status,
-            "error_message": run.error_message,
-            "created_at": run.created_at.isoformat() if run.created_at else None,
-        }
+        PredictionRunResponse(
+            id=run.id,
+            request_id=run.request_id,
+            prediction_type=run.prediction_type,
+            cache_hit=run.cache_hit,
+            method=run.method,
+            fallback_used=run.fallback_used,
+            latency_ms=run.latency_ms,
+            status=run.status,
+            error_message=run.error_message,
+            created_at=run.created_at.isoformat() if run.created_at else None,
+        )
         for run in runs
     ]

@@ -65,3 +65,24 @@ class CacheInvalidateRequest(BaseModel):
 
     prediction_type: Optional[str] = Field(default=None, description="Invalidate only this prediction type")
     scope_key: Optional[str] = Field(default=None, description="Invalidate only this scope")
+
+
+class CacheInvalidateResponse(BaseModel):
+    """Result of a cache invalidation request."""
+
+    invalidated: int = Field(description="Number of cache entries deleted")
+
+
+class PredictionRunResponse(BaseModel):
+    """Single prediction audit entry."""
+
+    id: int = Field(description="Prediction run identifier")
+    request_id: str = Field(description="Caller-facing request id")
+    prediction_type: str = Field(description="Prediction type (zoning, yield, calendar)")
+    cache_hit: bool = Field(description="Whether the result was served from cache")
+    method: str = Field(description="Method used: primary_model, fallback, mock")
+    fallback_used: bool = Field(description="Whether a fallback/mock path was used")
+    latency_ms: int = Field(description="End-to-end latency in milliseconds")
+    status: str = Field(description="Execution status: success, cached or error")
+    error_message: Optional[str] = Field(default=None, description="Error details when status is error")
+    created_at: Optional[str] = Field(default=None, description="UTC timestamp in ISO 8601 format")
