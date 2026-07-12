@@ -28,11 +28,12 @@ logger = get_logger("app.routers.zoning")
     response_model=ZoningBatchResponse,
     summary="Get crop recommendations for a municipality",
     description=(
-        "Evaluates all ML-supported crops for a municipality and returns them ranked.\n\n"
-        "The backend resolves the municipality and runs the LightGBM zoning model (or fallback) "
-        "for every supported crop. No crop_id is required.\n\n"
+        "Returns crops recommended for a municipality.\n\n"
+        "The backend evaluates every ML-supported crop with the LightGBM zoning model (or fallback) "
+        "and returns only those with suitability ``high`` or ``medium``. No crop_id is required.\n\n"
         "The response also includes an additional ``climate_based_recommendations`` list "
-        "with crops recommended by the climate+soil k-NN analog model, independent of LightGBM."
+        "with crops recommended by the climate+soil k-NN analog model, excluding crops already "
+        "recommended by LightGBM."
     ),
     responses={
         status.HTTP_404_NOT_FOUND: {
@@ -86,10 +87,17 @@ def get_zoning_recommendations_by_municipality(
             )
         )
 
+    # Keep only crops that LightGBM classified as high or medium.
+    results = [r for r in results if r.suitability in ("high", "medium")]
     results.sort(key=lambda x: x.confidence, reverse=True)
-    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} returning %s ranked crops", len(results))
+    logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} returning %s recommended crops", len(results))
 
-    climate_recs = prediction_service.get_climate_analog_recommendations(db, municipality_id)
+    lightgbm_crop_ids = [r.crop_id for r in results]
+    climate_recs = prediction_service.get_climate_analog_recommendations(
+        db,
+        municipality_id,
+        exclude_crop_ids=lightgbm_crop_ids,
+    )
     logger.info(
         "[endpoint] GET /zoning/recommendations/{municipality_id} adding %s climate-based recommendations",
         len(climate_recs),

@@ -2,13 +2,15 @@
 
 
 def test_zoning_recommendations(client):
-    """Municipality-only zoning returns all supported crops ranked by confidence."""
+    """Municipality-only zoning returns only high/medium crops ranked by confidence."""
     response = client.get("/api/v1/zoning/recommendations/05001")
     assert response.status_code == 200
     data = response.json()
     assert data["municipality_id"] == "05001"
     assert data["municipality_name"] == "MEDELL\u00cdN"
-    assert len(data["results"]) == 7
+    # Only high or medium suitability crops should be in results
+    for r in data["results"]:
+        assert r["suitability"] in ("high", "medium")
     # Results should be sorted by confidence descending
     confidences = [r["confidence"] for r in data["results"]]
     assert confidences == sorted(confidences, reverse=True)

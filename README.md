@@ -371,12 +371,14 @@ curl http://localhost:8000/api/v1/zoning/recommendations/05001
     }
   ],
   "climate_based_recommendations": [
-    { "crop_id": "aguacate", "crop_name": "Aguacate", "score": 0.3333, "source": "climate_analog_knn" },
-    { "crop_id": "cebolla", "crop_name": "Cebolla", "score": 0.2222, "source": "climate_analog_knn" }
+    { "crop_id": "cebolla", "crop_name": "Cebolla", "score": 0.2222, "source": "climate_analog_knn" },
+    { "crop_id": "fresa", "crop_name": "Fresa", "score": 0.2222, "source": "climate_analog_knn" }
   ],
   "model_version": "zoning-lightgbm-v1"
 }
 ```
+
+`results` contiene solo cultivos que LightGBM clasificó como `high` o `medium`. `climate_based_recommendations` muestra cultivos adicionales sugeridos por analogía climática (k-NN), excluyendo los que ya aparecen en `results`.
 
 ### Mapa de zonificación para un cultivo
 

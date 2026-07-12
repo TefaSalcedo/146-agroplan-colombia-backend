@@ -447,6 +447,7 @@ class PredictionService:
         db: Session,
         municipality_id: str,
         top_k: int = 5,
+        exclude_crop_ids: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Return additional crop recommendations for a municipality using climate analog k-NN.
 
@@ -507,8 +508,12 @@ class PredictionService:
             return []
 
         crop_catalog = CropCatalog()
+        exclude = set(exclude_crop_ids or [])
         recommendations = []
-        for crop_id, score in top_crops[:top_k]:
+        for crop_id, score in top_crops:
+            if crop_id in exclude:
+                logger.debug("[get_climate_analog_recommendations] Excluding already-ranked crop: %s", crop_id)
+                continue
             crop = crop_catalog.get_crop_model_by_id(db, crop_id)
             crop_name = crop.name if crop else crop_id
             recommendations.append({
@@ -517,6 +522,8 @@ class PredictionService:
                 "score": round(float(score), 4),
                 "source": "climate_analog_knn",
             })
+            if len(recommendations) >= top_k:
+                break
 
         logger.info(
             "[get_climate_analog_recommendations] Returning %s climate-based recommendations",
