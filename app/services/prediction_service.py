@@ -18,6 +18,7 @@ from sqlalchemy import text
 from app.config import get_settings
 from app.logger import get_logger
 from app.models import PredictionCache, PredictionRun
+from app.services.crop_catalog import CropCatalog
 from app.services.feature_builder import build_yield_features, build_zoning_features
 from app.services.mock_predictor import MockPredictor
 
@@ -440,6 +441,88 @@ class PredictionService:
             },
             "probabilities": probabilities,
         }
+
+    def get_climate_analog_recommendations(
+        self,
+        db: Session,
+        municipality_id: str,
+        top_k: int = 5,
+    ) -> List[Dict]:
+        """Return additional crop recommendations for a municipality using climate analog k-NN.
+
+        This runs independently of the primary LightGBM model. It finds the crops that
+        prosper in municipalities with similar climate+soil and returns them ranked.
+        """
+        loader = self._get_model_loader()
+        if not loader or not loader.is_climate_analog_loaded():
+            logger.debug("[get_climate_analog_recommendations] Recommender not loaded")
+            return []
+
+        if loader.municipality_profiles is None:
+            logger.debug("[get_climate_analog_recommendations] Municipality profiles not loaded")
+            return []
+
+        profiles = loader.municipality_profiles
+        try:
+            dane_int = int(municipality_id)
+        except (ValueError, TypeError):
+            logger.warning("[get_climate_analog_recommendations] Invalid municipality_id: %s", municipality_id)
+            return []
+
+        if "cod_dane_m" in profiles.columns:
+            row = profiles[profiles["cod_dane_m"] == dane_int]
+        else:
+            row = profiles.loc[[dane_int]] if dane_int in profiles.index else pd.DataFrame()
+
+        if row.empty:
+            logger.warning(
+                "[get_climate_analog_recommendations] No profile for municipality_id=%s",
+                municipality_id,
+            )
+            return []
+
+        recommender = loader.climate_analog_recommender
+        feature_names = recommender.feature_names
+        missing = [f for f in feature_names if f not in row.columns]
+        if missing:
+            logger.warning(
+                "[get_climate_analog_recommendations] Missing analog features for municipality_id=%s: %s",
+                municipality_id,
+                missing,
+            )
+            return []
+
+        logger.info(
+            "[get_climate_analog_recommendations] Querying climate analog for municipality_id=%s",
+            municipality_id,
+        )
+        try:
+            query = row[feature_names].fillna(0)
+            rec_result = recommender.recommend(query)
+            if not rec_result:
+                return []
+            top_crops = rec_result[0].get("top_crops", [])
+        except Exception as e:
+            logger.error("[get_climate_analog_recommendations] Recommender inference failed: %s", e)
+            return []
+
+        crop_catalog = CropCatalog()
+        recommendations = []
+        for crop_id, score in top_crops[:top_k]:
+            crop = crop_catalog.get_crop_model_by_id(db, crop_id)
+            crop_name = crop.name if crop else crop_id
+            recommendations.append({
+                "crop_id": crop_id,
+                "crop_name": crop_name,
+                "score": round(float(score), 4),
+                "source": "climate_analog_knn",
+            })
+
+        logger.info(
+            "[get_climate_analog_recommendations] Returning %s climate-based recommendations",
+            len(recommendations),
+        )
+        return recommendations
 
     def predict_zoning(
         self,

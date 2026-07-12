@@ -2,6 +2,19 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional, Dict, List
 
 
+class ClimateBasedRecommendation(BaseModel):
+    """Crop recommendation derived from climate+soil k-NN analogs.
+
+    This is independent of the primary LightGBM model and highlights crops that
+    prosper in municipalities with similar climate and soil characteristics.
+    """
+
+    crop_id: str = Field(description="Crop identifier")
+    crop_name: str = Field(description="Crop common name")
+    score: float = Field(ge=0.0, le=1.0, description="Share of apta neighbors that recommend this crop")
+    source: str = Field(default="climate_analog_knn", description="Source model: climate_analog_knn")
+
+
 class ZoningRequest(BaseModel):
     crop_id: str = Field(description="Crop identifier")
     municipality_id: str = Field(description="Municipality DANE code (5 digits)")
@@ -57,6 +70,10 @@ class ZoningBatchResponse(BaseModel):
     municipality_id: str
     municipality_name: str
     results: List[ZoningBatchCropResult]
+    climate_based_recommendations: List[ClimateBasedRecommendation] = Field(
+        default=[],
+        description="Additional crops recommended by climate+soil k-NN analogs",
+    )
     model_version: str
 
 

@@ -2,6 +2,7 @@ from typing import List
 from pydantic import BaseModel, Field
 
 from app.schemas.crop import CropResponseLite, TopCropResponse
+from app.schemas.zoning import ClimateBasedRecommendation
 
 
 class RecommendationRequest(BaseModel):
@@ -17,6 +18,10 @@ class NextPlantingSeason(BaseModel):
 class RecommendationResponse(BaseModel):
     top_crop: TopCropResponse = Field(description="Highest ranked crop for the municipality")
     other_crops: List[CropResponseLite] = Field(description="Alternative crops ranked 2-5")
+    climate_based_recommendations: List[ClimateBasedRecommendation] = Field(
+        default=[],
+        description="Additional crops recommended by climate+soil k-NN analogs",
+    )
     next_planting_season: NextPlantingSeason = Field(
         description="Crops that can be planted in the upcoming month"
     )

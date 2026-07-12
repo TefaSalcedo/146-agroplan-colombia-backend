@@ -8,6 +8,7 @@ from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.mock_predictor import MockPredictor
 from app.services.prediction_service import PredictionService
 from app.schemas.zoning import (
+    ClimateBasedRecommendation,
     ZoningRequest,
     ZoningResponse,
     ZoningBatchRequest,
@@ -152,10 +153,17 @@ def get_zoning_recommendations_by_municipality(
     results.sort(key=lambda x: x.confidence, reverse=True)
     logger.info("[endpoint] GET /zoning/recommendations/{municipality_id} returning %s ranked crops", len(results))
 
+    climate_recs = prediction_service.get_climate_analog_recommendations(db, municipality_id)
+    logger.info(
+        "[endpoint] GET /zoning/recommendations/{municipality_id} adding %s climate-based recommendations",
+        len(climate_recs),
+    )
+
     return ZoningBatchResponse(
         municipality_id=municipality_id,
         municipality_name=municipality.name,
         results=results,
+        climate_based_recommendations=[ClimateBasedRecommendation(**r) for r in climate_recs],
         model_version="zoning-lightgbm-v1",
     )
 
@@ -235,11 +243,18 @@ def get_zoning_recommendations(
     results.sort(key=lambda x: x.confidence, reverse=True)
     logger.info("[endpoint] POST /zoning/recommendations returning %s ranked crops", len(results))
 
+    climate_recs = prediction_service.get_climate_analog_recommendations(db, request.municipality_id)
+    logger.info(
+        "[endpoint] POST /zoning/recommendations adding %s climate-based recommendations",
+        len(climate_recs),
+    )
+
     return ZoningBatchResponse(
         municipality_id=request.municipality_id,
         municipality_name=municipality.name,
         results=results,
-        model_version="mock-v1",
+        climate_based_recommendations=[ClimateBasedRecommendation(**r) for r in climate_recs],
+        model_version="zoning-lightgbm-v1",
     )
 
 

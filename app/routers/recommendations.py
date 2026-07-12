@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.crop import CropResponseLite, GrowthStage, Tip, TopCropResponse
+from app.schemas.zoning import ClimateBasedRecommendation
 from app.schemas.recommendation import (
     NextPlantingSeason,
     RecommendationRequest,
@@ -144,9 +145,16 @@ def get_recommendations(
         crops=plantable_crops[:4],
     )
 
+    climate_recs = prediction_service.get_climate_analog_recommendations(db, request.municipality_id)
+    logger.info(
+        "[endpoint] POST /recommendations adding %s climate-based recommendations",
+        len(climate_recs),
+    )
+
     logger.info("[endpoint] POST /recommendations returning top_crop=%s", top_crop_response.id)
     return RecommendationResponse(
         top_crop=top_crop_response,
         other_crops=other_crops,
+        climate_based_recommendations=[ClimateBasedRecommendation(**r) for r in climate_recs],
         next_planting_season=next_planting_season,
     )
