@@ -20,6 +20,7 @@ from app.logger import get_logger
 from app.models import PredictionCache, PredictionRun
 from app.services.crop_catalog import CropCatalog
 from app.services.feature_builder import build_yield_features, build_zoning_features
+from app.services.llm_service import get_llm_service, log_llm_generation, PROMPT_SCHEMA_VERSION
 from app.services.mock_predictor import MockPredictor
 
 settings = get_settings()
@@ -703,6 +704,7 @@ class PredictionService:
         municipality_id: str,
         crop_ids: List[str],
         horizon_months: int = 12,
+        municipality_name: str = "",
     ) -> Dict:
         """Predict planting calendars for multiple crops in a municipality."""
         logger.info("[predict_calendar_batch] Starting prediction (municipality_id=%s, crops=%s, horizon=%s)", municipality_id, len(crop_ids), horizon_months)
@@ -725,8 +727,25 @@ class PredictionService:
 
         for crop_id in crop_ids:
             logger.debug("[predict_calendar_batch] Building calendar for crop_id=%s", crop_id)
-            result = self._build_calendar_crop_result(db, crop_id, municipality_id, horizon_months)
+            result = self._build_calendar_crop_result(
+                db, crop_id, municipality_id, municipality_name, horizon_months
+            )
             results.append(result)
+
+        # Determine aggregate model version and method from crop results
+        methods = {r.get("method") for r in results if r.get("method")}
+        if methods == {"yield_ensemble"}:
+            model_version = "yield-ensemble-v1"
+            method = "yield_ensemble"
+        elif "yield_ensemble" in methods:
+            model_version = "yield-ensemble-v1"
+            method = "yield_ensemble_partial"
+        elif methods:
+            model_version = "unavailable"
+            method = "unavailable"
+        else:
+            model_version = "unavailable"
+            method = "unavailable"
 
         latency_ms = int((time.time() - start) * 1000)
         logger.info("[predict_calendar_batch] Calendar results built in %sms for %s crops", latency_ms, len(results))
@@ -734,9 +753,7 @@ class PredictionService:
             "municipality_id": municipality_id,
             "horizon_months": horizon_months,
             "results": results,
-            "model_version": "mock-v1",
-            "explanation": None,
-            "llm_status": "llm_unavailable",
+            "model_version": model_version,
         }
 
         logger.debug("[predict_calendar_batch] Storing calendar batch in cache")
@@ -757,7 +774,7 @@ class PredictionService:
             result=payload,
             cache_hit=False,
             latency_ms=latency_ms,
-            method="mock",
+            method=method,
         )
 
         logger.info("[predict_calendar_batch] Returning payload with %s crop results", len(results))
@@ -768,6 +785,7 @@ class PredictionService:
         db: Session,
         crop_id: str,
         municipality_id: str,
+        municipality_name: str,
         horizon_months: int,
     ) -> Dict:
         """Build a calendar result for a single crop."""
@@ -792,7 +810,8 @@ class PredictionService:
                 "top_harvest_months": [],
                 "monthly_forecasts": [],
                 "warnings": ["Crop not found"],
-                "method": "mock",
+                "method": "unavailable",
+                "explanation": {"status": "llm_unavailable", "error": "Crop or municipality not found"},
             }
 
         # Build monthly forecasts from stored data or mock
@@ -901,33 +920,109 @@ class PredictionService:
         else:
             warnings.append("No calendar data available from EVA/FAO for this crop; harvest windows cannot be computed.")
 
-        if yield_result:
-            logger.info(
-                "[_build_calendar_crop_result] Returning calendar (crop_id=%s, method=%s, yield_prediction=%s, top_harvest=%s)",
-                crop_id, yield_result["method"], yield_result["yield_prediction"], len(top_harvest)
-            )
+        if not yield_result:
+            logger.warning("[_build_calendar_crop_result] Yield ensemble unavailable for crop_id=%s", crop_id)
+            warnings.append("Yield prediction models are not available for this crop and municipality.")
             return {
                 "crop_id": crop_id,
                 "crop_name": crop.name,
-                "yield_prediction": yield_result["yield_prediction"],
-                "yield_model_version": yield_result["yield_model_version"],
-                "yield_confidence": yield_result["yield_confidence"],
+                "yield_prediction": None,
+                "yield_model_version": None,
+                "yield_confidence": "low",
                 "top_harvest_months": top_harvest,
                 "monthly_forecasts": monthly_forecasts,
                 "warnings": warnings,
-                "method": yield_result["method"],
+                "method": "unavailable",
+                "explanation": {"status": "llm_unavailable", "error": "Yield prediction models unavailable"},
             }
 
-        logger.warning("[_build_calendar_crop_result] Yield ensemble unavailable; returning mock result for crop_id=%s", crop_id)
-        warnings.append("Mock prediction - ML models not yet loaded")
-        return {
+        # Build crop-specific result
+        result_payload = {
             "crop_id": crop_id,
             "crop_name": crop.name,
-            "yield_prediction": None,
-            "yield_model_version": None,
-            "yield_confidence": "low",
+            "yield_prediction": yield_result["yield_prediction"],
+            "yield_model_version": yield_result["yield_model_version"],
+            "yield_confidence": yield_result["yield_confidence"],
             "top_harvest_months": top_harvest,
             "monthly_forecasts": monthly_forecasts,
             "warnings": warnings,
-            "method": "mock",
+            "method": yield_result["method"],
         }
+
+        # Generate per-crop LLM explanation and persist the call
+        explanation_result = self._generate_crop_explanation(
+            db,
+            crop=crop,
+            municipality_name=municipality_name,
+            result=result_payload,
+        )
+        result_payload["explanation"] = explanation_result
+
+        logger.info(
+            "[_build_calendar_crop_result] Returning calendar (crop_id=%s, method=%s, yield_prediction=%s, top_harvest=%s)",
+            crop_id, yield_result["method"], yield_result["yield_prediction"], len(top_harvest)
+        )
+        return result_payload
+
+    def _generate_crop_explanation(
+        self,
+        db: Session,
+        crop: Any,
+        municipality_name: str,
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate and persist a per-crop LLM explanation."""
+        try:
+            llm = get_llm_service()
+            llm_result = llm.generate_explanation(
+                prediction_data={
+                    "crop_id": crop.id,
+                    "crop_name": crop.name,
+                    "municipality": municipality_name,
+                    "yield_prediction": result.get("yield_prediction"),
+                    "yield_confidence": result.get("yield_confidence"),
+                    "top_harvest_months": result.get("top_harvest_months", []),
+                    "monthly_forecasts": result.get("monthly_forecasts", []),
+                },
+                municipality_name=municipality_name,
+            )
+
+            tokens_in = llm_result.get("tokens_in")
+            tokens_out = llm_result.get("tokens_out")
+            tokens_total = None
+            if tokens_in is not None and tokens_out is not None:
+                tokens_total = tokens_in + tokens_out
+
+            log_id = log_llm_generation(
+                db,
+                provider=llm_result.get("provider"),
+                model=llm_result.get("model"),
+                prompt_schema_version=PROMPT_SCHEMA_VERSION,
+                context_summary=f"calendar_explanation:{crop.id}:{municipality_name}",
+                response_json={"explanation": llm_result.get("explanation")},
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=llm_result.get("latency_ms"),
+                status=llm_result.get("llm_status", "llm_unavailable"),
+                error_message=llm_result.get("error"),
+            )
+            logger.debug("[_generate_crop_explanation] LLM generation logged id=%s", log_id)
+
+            return {
+                "text": llm_result.get("explanation"),
+                "status": llm_result.get("llm_status", "llm_unavailable"),
+                "provider": llm_result.get("provider"),
+                "model": llm_result.get("model"),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "tokens_total": tokens_total,
+                "latency_ms": llm_result.get("latency_ms"),
+                "error": llm_result.get("error"),
+            }
+        except Exception as e:
+            logger.error("[_generate_crop_explanation] Failed to generate explanation for crop_id=%s: %s", crop.id, e)
+            return {
+                "text": None,
+                "status": "llm_unavailable",
+                "error": str(e),
+            }

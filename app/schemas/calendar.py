@@ -65,6 +65,20 @@ class CalendarHarvestWindow(BaseModel):
     duration_days_max: Optional[int] = None
 
 
+class CalendarCropExplanation(BaseModel):
+    """LLM-generated explanation for a single crop result."""
+
+    text: Optional[str] = Field(default=None, description="Generated explanation text")
+    status: str = Field(description="LLM generation status: success, llm_unavailable")
+    provider: Optional[str] = Field(default=None, description="LLM provider used")
+    model: Optional[str] = Field(default=None, description="LLM model used")
+    tokens_in: Optional[int] = Field(default=None, description="Input tokens consumed")
+    tokens_out: Optional[int] = Field(default=None, description="Output tokens consumed")
+    tokens_total: Optional[int] = Field(default=None, description="Total tokens consumed")
+    latency_ms: Optional[int] = Field(default=None, description="LLM call latency in milliseconds")
+    error: Optional[str] = Field(default=None, description="Error message if generation failed")
+
+
 class CalendarCropResult(BaseModel):
     """Calendar prediction for a single crop in a batch request."""
 
@@ -85,6 +99,10 @@ class CalendarCropResult(BaseModel):
     )
     warnings: List[str] = Field(default_factory=list)
     method: str = Field(description="Prediction method used")
+    explanation: CalendarCropExplanation = Field(
+        default_factory=lambda: CalendarCropExplanation(status="llm_unavailable"),
+        description="LLM-generated explanation specific to this crop",
+    )
 
 
 class CalendarBatchResponse(BaseModel):
@@ -95,9 +113,3 @@ class CalendarBatchResponse(BaseModel):
     horizon_months: int
     results: List[CalendarCropResult]
     model_version: str
-    explanation: Optional[str] = Field(
-        default=None, description="LLM-generated explanation (null if LLM unavailable)"
-    )
-    llm_status: Optional[str] = Field(
-        default=None, description="LLM generation status: success, llm_unavailable"
-    )

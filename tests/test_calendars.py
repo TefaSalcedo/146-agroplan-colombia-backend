@@ -66,12 +66,22 @@ def test_calendar_batch_municipality_not_found(client):
     assert response.status_code == 404
 
 
-def test_calendar_batch_llm_status(client):
-    """LLM status should be set (either success or llm_unavailable)."""
+def test_calendar_batch_explanation_per_crop(client):
+    """Each crop result includes its own LLM explanation audit fields."""
     response = client.post(
         "/api/v1/calendars/predict-batch",
         json={"municipality_id": "05001", "crop_ids": ["aguacate"]},
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["llm_status"] in ("success", "llm_unavailable")
+    assert "explanation" not in data
+    for result in data["results"]:
+        assert "explanation" in result
+        explanation = result["explanation"]
+        assert "status" in explanation
+        assert explanation["status"] in ("success", "llm_unavailable")
+        assert "tokens_in" in explanation
+        assert "tokens_out" in explanation
+        assert "tokens_total" in explanation
+        assert "provider" in explanation
+        assert "model" in explanation

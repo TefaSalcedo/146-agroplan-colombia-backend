@@ -250,8 +250,7 @@ docker compose restart api
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `POST` | `/api/v1/calendars/predict` | Calendario legado un mes |
-| `POST` | `/api/v1/calendars/predict-batch` | Calendario multi-cultivo 12 meses |
+| `POST` | `/api/v1/calendars/predict-batch` | Calendario multi-cultivo 12 meses con explicación por cultivo |
 
 
 ### Admin (requieren `X-Admin-API-Key`)
@@ -396,6 +395,39 @@ curl -X POST http://localhost:8000/api/v1/calendars/predict-batch \
     "crop_ids": ["aguacate", "pina"],
     "horizon_months": 12
   }'
+```
+
+```json
+{
+  "municipality_id": "05001",
+  "municipality_name": "MEDELLÍN",
+  "horizon_months": 12,
+  "results": [
+    {
+      "crop_id": "aguacate",
+      "crop_name": "Aguacate",
+      "yield_prediction": 5.16,
+      "yield_model_version": "yield-ensemble-v1",
+      "yield_confidence": "medium",
+      "top_harvest_months": [...],
+      "monthly_forecasts": [...],
+      "warnings": [],
+      "method": "yield_ensemble",
+      "explanation": {
+        "text": "En Medellín, el aguacate...",
+        "status": "success",
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "tokens_in": 450,
+        "tokens_out": 120,
+        "tokens_total": 570,
+        "latency_ms": 1234,
+        "error": null
+      }
+    }
+  ],
+  "model_version": "yield-ensemble-v1"
+}
 ```
 
 ### Admin: estado de modelos

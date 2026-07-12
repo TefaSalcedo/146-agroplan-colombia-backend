@@ -12,6 +12,8 @@ from typing import Optional, Dict, Any, List
 
 import httpx
 
+from sqlalchemy.orm import Session
+
 from app.config import get_settings
 from app.logger import get_logger
 
@@ -343,6 +345,52 @@ class LLMService:
 
 # Singleton
 _llm_service: Optional[LLMService] = None
+
+
+def log_llm_generation(
+    db: Session,
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    prompt_schema_version: str,
+    context_summary: str,
+    response_json: Optional[Dict[str, Any]],
+    tokens_in: Optional[int],
+    tokens_out: Optional[int],
+    latency_ms: Optional[int],
+    status: str,
+    error_message: Optional[str] = None,
+    prediction_run_id: Optional[int] = None,
+) -> Optional[int]:
+    """Persist an LLM call to the database for auditing and cost tracking.
+
+    Returns the generated row id, or None if the insert fails.
+    """
+    try:
+        from app.models import LLMGeneration
+
+        generation = LLMGeneration(
+            provider=provider or "unknown",
+            model=model or "unknown",
+            prompt_schema_version=prompt_schema_version,
+            context_summary=context_summary,
+            response_json=response_json,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=latency_ms,
+            status=status,
+            error_message=error_message,
+            prediction_run_id=prediction_run_id,
+        )
+        db.add(generation)
+        db.commit()
+        db.refresh(generation)
+        logger.info("[log_llm_generation] Saved LLM generation id=%s provider=%s model=%s", generation.id, provider, model)
+        return generation.id
+    except Exception as e:
+        logger.error("[log_llm_generation] Failed to persist LLM generation: %s", e)
+        db.rollback()
+        return None
 
 
 def get_llm_service() -> LLMService:
