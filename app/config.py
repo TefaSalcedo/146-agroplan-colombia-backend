@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
 
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_ml_llm_per_minute: int = 20
+    rate_limit_general_per_minute: int = 100
+    rate_limit_window_seconds: int = 60
+
     # Climate Sync Job
     enable_climate_sync: bool = False
     climate_sync_hour: int = 3

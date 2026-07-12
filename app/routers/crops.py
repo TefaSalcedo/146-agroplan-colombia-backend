@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,6 +17,7 @@ from app.services.crop_recommendation_service import get_crop_recommendation_cac
 from app.services.llm_service import get_llm_service
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.prediction_service import PredictionService
+from app.middleware.rate_limit import ML_LLM_GROUP, enforce_rate_limit, rate_limit
 
 router = APIRouter(prefix="/crops", tags=["crops"])
 catalog = CropCatalog()
@@ -114,7 +115,10 @@ def get_crop(
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def get_crop_recommendation(
+    http_request: Request,
     crop_id: str = Path(..., description="Crop identifier"),
     municipality_id: str = Path(..., description="Municipality DANE code (5 digits)"),
     db: Session = Depends(get_db),
@@ -166,7 +170,10 @@ def get_crop_recommendation(
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def get_crop_national_guide(
+    http_request: Request,
     crop_id: str = Path(..., description="Crop identifier (e.g. aguacate, cebolla)"),
     db: Session = Depends(get_db),
 ):

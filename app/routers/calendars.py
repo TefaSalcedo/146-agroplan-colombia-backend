@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Body, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -15,6 +15,7 @@ from app.schemas.system import ErrorResponse
 from app.services.crop_catalog import CropCatalog
 from app.services.municipality_catalog import MunicipalityCatalog
 from app.services.prediction_service import PredictionService
+from app.middleware.rate_limit import ML_LLM_GROUP, enforce_rate_limit, rate_limit
 
 router = APIRouter(prefix="/calendars", tags=["calendars"])
 municipality_catalog = MunicipalityCatalog()
@@ -42,7 +43,10 @@ logger = get_logger("app.routers.calendars")
         },
     },
 )
+@enforce_rate_limit
+@rate_limit(ML_LLM_GROUP)
 def predict_calendar_batch(
+    http_request: Request,
     request: CalendarBatchRequest = Body(
         ...,
         examples={
