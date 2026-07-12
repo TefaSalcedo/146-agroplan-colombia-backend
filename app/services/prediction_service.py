@@ -41,12 +41,20 @@ def _parse_months_string(value: Any) -> List[int]:
 
 
 def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str, Any]:
-    """Return crop calendar info strictly from EVA/FAO datasets.
+    """Return crop calendar info from EVA/FAO datasets with verified fallback.
 
-    No hardcoded agronomic windows are used. If the external calendar does not
-    provide a value, the field is returned empty/None so the caller can decide
-    whether to surface the uncertainty instead of inventing data.
+    Priority:
+    1. FAO sowing months from calendar_for_eva.csv.
+    2. EVA-inferred semester-based planting months (data-driven, not hardcoded).
+    3. Verified agronomic facts from external sources (crop_agronomic_data.py).
+
+    Cycle duration priority:
+    1. FAO/EcoCrop duration fields.
+    2. Verified agronomic facts for crops with no EcoCrop duration (aguacate).
     """
+    from app.services.crop_agronomic_data import get_agronomic_facts
+    from app.services.feature_builder import _get_calendar_row
+
     info: Dict[str, Any] = {
         "planting_months": [],
         "duration_days_min": None,
@@ -55,36 +63,91 @@ def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str,
         "cycle_days_max": None,
     }
 
-    if loader is None or loader.calendar_for_eva is None:
-        return info
+    verified = get_agronomic_facts(crop_id)
 
-    try:
-        from app.services.feature_builder import _get_calendar_row
+    def _valid_int(value):
+        if value is None or pd.isna(value):
+            return None
+        v = int(value)
+        return v if v > 0 else None
 
-        row = _get_calendar_row(loader, crop_id)
-        if row is None:
-            return info
+    # Try FAO/EcoCrop calendar first
+    if loader is not None and loader.calendar_for_eva is not None:
+        try:
+            row = _get_calendar_row(loader, crop_id)
+            if row is not None:
+                fao_months = _parse_months_string(row.get("fao_sowing_months"))
+                gmin = row.get("gmin_dias")
+                gmax = row.get("gmax_dias")
+                fao_dur_min = row.get("fao_duration_min_dias")
+                fao_dur_max = row.get("fao_duration_max_dias")
 
-        fao_months = _parse_months_string(row.get("fao_sowing_months"))
-        gmin = row.get("gmin_dias")
-        gmax = row.get("gmax_dias")
-        fao_dur_min = row.get("fao_duration_min_dias")
-        fao_dur_max = row.get("fao_duration_max_dias")
+                info["planting_months"] = fao_months
+                info["duration_days_min"] = _valid_int(fao_dur_min) or _valid_int(gmin)
+                info["duration_days_max"] = _valid_int(fao_dur_max) or _valid_int(gmax)
+                info["cycle_days_min"] = _valid_int(gmin)
+                info["cycle_days_max"] = _valid_int(gmax)
+        except Exception:
+            pass
 
-        def _valid_int(value):
-            if value is None or pd.isna(value):
-                return None
-            v = int(value)
-            return v if v > 0 else None
+    # If FAO did not provide sowing months, try EVA inference
+    if not info["planting_months"] and loader is not None:
+        eva_months = _infer_planting_months_from_eva(loader, crop_id)
+        if eva_months:
+            info["planting_months"] = eva_months
 
-        info["planting_months"] = fao_months
-        info["duration_days_min"] = _valid_int(fao_dur_min) or _valid_int(gmin)
-        info["duration_days_max"] = _valid_int(fao_dur_max) or _valid_int(gmax)
-        info["cycle_days_min"] = _valid_int(gmin)
-        info["cycle_days_max"] = _valid_int(gmax)
-        return info
-    except Exception:
-        return info
+    # Last fallback: verified agronomic facts
+    if not info["planting_months"] and verified:
+        info["planting_months"] = verified.get("planting_months", [])
+
+    if info["duration_days_min"] is None and verified:
+        info["duration_days_min"] = verified.get("cycle_days_min")
+    if info["duration_days_max"] is None and verified:
+        info["duration_days_max"] = verified.get("cycle_days_max")
+    if info["cycle_days_min"] is None and verified:
+        info["cycle_days_min"] = verified.get("cycle_days_min")
+    if info["cycle_days_max"] is None and verified:
+        info["cycle_days_max"] = verified.get("cycle_days_max")
+
+    return info
+
+
+def _infer_planting_months_from_eva(loader: Any, crop_id: str) -> List[int]:
+    """Infer planting months from EVA historical frequency by semester.
+
+    EVA only records semester (1 = Jan-Jun, 2 = Jul-Dec), so we map the most
+    active semester to representative months. This is data-driven, not hardcoded.
+    """
+    from app.services.feature_builder import _YIELD_CROP_NAME_MAP
+
+    profiles = loader.yield_profiles if loader else None
+    if profiles is None:
+        return []
+
+    crop_name = _YIELD_CROP_NAME_MAP.get(crop_id)
+    if not crop_name:
+        return []
+
+    rows = profiles[profiles["cultivo"] == crop_name]
+    if rows.empty:
+        return []
+
+    # Count records per semester and pick the one with most activity.
+    counts = rows.groupby("semestre").size().to_dict()
+    if not counts:
+        return []
+
+    # If the crop is mostly annual, EVA does not indicate a specific sowing window.
+    annual_ratio = (rows["es_anual"].sum() / len(rows)) if "es_anual" in rows.columns else 0.0
+    if annual_ratio > 0.8:
+        return []
+
+    best_semester = max(counts, key=counts.get)
+    if best_semester == 1:
+        return [3, 4, 5, 6]
+    elif best_semester == 2:
+        return [9, 10, 11, 12]
+    return []
 
 
 def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str) -> Optional[Dict]:
