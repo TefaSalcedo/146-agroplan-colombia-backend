@@ -166,11 +166,11 @@ docker compose logs -f db
 | `HF_MODEL_REPO_ZONING` | Repo de modelos de zonificación | `agroplan/zoning-models` |
 | `HF_MODEL_REPO_YIELD` | Repo de modelos de rendimiento | `agroplan/yield-models` |
 | `HF_MODEL_REVISION` | Revisión fija de HF | `main` |
-| `LLM_PROVIDER` | Proveedor LLM primario | `openrouter` |
+| `LLM_PROVIDER` | Punto de inicio del round-robin (`openrouter` o `groq`) | `openrouter` |
 | `OPENROUTER_API_KEY` | API key de OpenRouter | `sk-...` |
-| `OPENROUTER_MODELS` | Lista de modelos a intentar | `anthropic/claude-sonnet-4-20250514,google/gemini-flash-1.5` |
+| `OPENROUTER_MODELS` | Modelos separados por coma (round-robin) | `google/gemini-2.0-flash:free,meta-llama/llama-3.3-70b-instruct:free` |
 | `GROQ_API_KEY` | API key de Groq | `gsk_...` |
-| `GROQ_MODELS` | Lista de modelos Groq | `llama-3.3-70b-versatile` |
+| `GROQ_MODELS` | Modelos separados por coma (round-robin) | `llama-3.3-70b-versatile,llama-3.1-8b-instant,mistral-saba-24b` |
 | `LLM_TIMEOUT_SECONDS` | Timeout por llamada LLM | `30` |
 | `ADMIN_API_KEY` | API key para endpoints admin | `tu-admin-key-segura` |
 | `CACHE_TTL_STRATEGY` | Estrategia de TTL de caché | `end_of_month_bogota` |

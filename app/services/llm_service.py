@@ -1,11 +1,12 @@
 """LLM service for generating explanations and validating prediction results.
 
-Supports OpenRouter and Groq with automatic provider fallback.
+Supports OpenRouter and Groq with round-robin model selection across providers.
 When all LLM providers fail, returns None and the caller returns a 200
 with data intact and explanation fields set to null.
 """
 
 import json
+import threading
 import time
 from typing import Optional, Dict, Any, List
 
@@ -19,51 +20,87 @@ PROMPT_SCHEMA_VERSION = "1.0"
 
 
 class LLMService:
-    """LLM service with multi-provider support and fallback."""
+    """LLM service with round-robin provider/model selection."""
 
     def __init__(self):
         self.timeout = settings.llm_timeout_seconds
+        self._round_robin_index = 0
+        self._round_robin_lock = threading.Lock()
 
-    def _get_providers(self) -> List[Dict[str, Any]]:
-        """Build ordered list of providers to try."""
-        providers = []
+    def _openrouter_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.openrouter_models_list
+        if not settings.openrouter_api_key or not models:
+            return None
+        return {
+            "provider": "openrouter",
+            "api_key": settings.openrouter_api_key,
+            "models": models,
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+
+    def _groq_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.groq_models_list
+        if not settings.groq_api_key or not models:
+            return None
+        return {
+            "provider": "groq",
+            "api_key": settings.groq_api_key,
+            "models": models,
+            "base_url": "https://api.groq.com/openai/v1",
+        }
+
+    def _get_model_pool(self) -> List[Dict[str, Any]]:
+        """Return a flat list of all configured (provider, model) entries."""
+        pool: List[Dict[str, Any]] = []
+
+        openrouter = self._openrouter_config()
+        groq = self._groq_config()
 
         primary = settings.llm_provider.lower()
 
+        # Round-robin interleaves providers starting from the preferred one.
         if primary == "openrouter":
-            providers.extend(self._openrouter_config())
-            providers.extend(self._groq_config())
+            first, second = openrouter, groq
         else:
-            providers.extend(self._groq_config())
-            providers.extend(self._openrouter_config())
+            first, second = groq, openrouter
 
-        return providers
+        if first:
+            for model in first["models"]:
+                pool.append({
+                    "provider": first["provider"],
+                    "api_key": first["api_key"],
+                    "base_url": first["base_url"],
+                    "model": model,
+                })
 
-    def _openrouter_config(self) -> List[Dict[str, Any]]:
-        models = settings.openrouter_models_list
-        if not settings.openrouter_api_key or not models:
-            return []
-        return [
-            {
-                "provider": "openrouter",
-                "api_key": settings.openrouter_api_key,
-                "models": models,
-                "base_url": "https://openrouter.ai/api/v1",
-            }
-        ]
+        if second:
+            for model in second["models"]:
+                pool.append({
+                    "provider": second["provider"],
+                    "api_key": second["api_key"],
+                    "base_url": second["base_url"],
+                    "model": model,
+                })
 
-    def _groq_config(self) -> List[Dict[str, Any]]:
-        models = settings.groq_models_list
-        if not settings.groq_api_key or not models:
-            return []
-        return [
-            {
-                "provider": "groq",
-                "api_key": settings.groq_api_key,
-                "models": models,
-                "base_url": "https://api.groq.com/openai/v1",
-            }
-        ]
+        return pool
+
+    def _select_next_model(self, pool: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Pick the next model in the round-robin sequence."""
+        if not pool:
+            return None
+        with self._round_robin_lock:
+            idx = self._round_robin_index % len(pool)
+            self._round_robin_index = (self._round_robin_index + 1) % len(pool)
+            return pool[idx]
+
+    def _build_system_prompt(self, base_prompt: str, response_format: Optional[Dict] = None) -> str:
+        """Append Spanish-language instruction unless the response must be structured JSON."""
+        if response_format is not None:
+            return base_prompt
+        return (
+            f"{base_prompt}\n\n"
+            "Responde siempre en español."
+        )
 
     def _build_chat_request(
         self,
@@ -75,7 +112,7 @@ class LLMService:
     ) -> Dict[str, Any]:
         """Build an OpenAI-compatible chat completion request."""
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": self._build_system_prompt(system_prompt, response_format)},
             {"role": "user", "content": user_content},
         ]
 
@@ -193,7 +230,7 @@ class LLMService:
 
         system_prompt = (
             "You are an agronomic assistant for Colombia. Given crop prediction data, "
-            "write a concise, practical explanation in Spanish for a farmer. "
+            "write a concise, practical explanation for a farmer. "
             "Focus on: why the crop is or isn't suitable, key climate factors, and "
             "one actionable recommendation. Do not invent data. Use only the provided "
             "information. Keep it under 200 words."
@@ -208,9 +245,9 @@ class LLMService:
             default=str,
         )
 
-        providers = self._get_providers()
+        pool = self._get_model_pool()
 
-        if not providers:
+        if not pool:
             latency_ms = int((time.time() - start) * 1000)
             return {
                 "explanation": None,
@@ -223,34 +260,58 @@ class LLMService:
                 "error": "No LLM providers configured",
             }
 
-        for provider in providers:
-            for model in provider["models"]:
-                result = self._call_provider(
-                    provider, model, system_prompt, user_content
-                )
+        # Round-robin: start from the next model in the pool.
+        first_selected = self._select_next_model(pool)
+        if first_selected is None:
+            return {
+                "explanation": None,
+                "llm_status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": "No LLM models available",
+            }
 
-                if result is None:
-                    continue
+        # Build a circular iterator starting from the selected model so that
+        # failures continue with the next one in round-robin order.
+        start_idx = pool.index(first_selected)
+        ordered_pool = pool[start_idx:] + pool[:start_idx]
 
-                if "error" in result:
-                    # Try next model/provider
-                    print(f"[llm] {provider['provider']}/{model} failed: {result['error']}")
-                    continue
+        for entry in ordered_pool:
+            provider = {
+                "provider": entry["provider"],
+                "api_key": entry["api_key"],
+                "base_url": entry["base_url"],
+            }
+            model = entry["model"]
 
-                latency_ms = int((time.time() - start) * 1000)
-                explanation = result.get("content", "").strip()
+            result = self._call_provider(
+                provider, model, system_prompt, user_content
+            )
 
-                if explanation:
-                    return {
-                        "explanation": explanation,
-                        "llm_status": "success",
-                        "provider": result.get("provider"),
-                        "model": result.get("model"),
-                        "tokens_in": result.get("tokens_in"),
-                        "tokens_out": result.get("tokens_out"),
-                        "latency_ms": latency_ms,
-                        "error": None,
-                    }
+            if result is None:
+                continue
+
+            if "error" in result:
+                print(f"[llm] {entry['provider']}/{model} failed: {result['error']}")
+                continue
+
+            latency_ms = int((time.time() - start) * 1000)
+            explanation = result.get("content", "").strip()
+
+            if explanation:
+                return {
+                    "explanation": explanation,
+                    "llm_status": "success",
+                    "provider": result.get("provider"),
+                    "model": result.get("model"),
+                    "tokens_in": result.get("tokens_in"),
+                    "tokens_out": result.get("tokens_out"),
+                    "latency_ms": latency_ms,
+                    "error": None,
+                }
 
         latency_ms = int((time.time() - start) * 1000)
         return {
@@ -266,7 +327,7 @@ class LLMService:
 
     def is_configured(self) -> bool:
         """Check if at least one LLM provider is configured."""
-        return len(self._get_providers()) > 0
+        return len(self._get_model_pool()) > 0
 
 
 # Singleton
