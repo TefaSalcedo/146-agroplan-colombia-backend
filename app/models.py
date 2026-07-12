@@ -160,6 +160,8 @@ class Crop(Base):
     scientific_name = Column(String(200), nullable=True)
     image = Column(String(255), nullable=True)
     days_to_harvest = Column(Integer, nullable=True)
+    establishment_period_days = Column(Integer, nullable=True)
+    is_perennial = Column(Boolean, nullable=False, default=False)
     soil_type = Column(String(255), nullable=True)
     ideal_temperature = Column(String(100), nullable=True)
     humidity = Column(String(100), nullable=True)
@@ -243,6 +245,115 @@ class PredictionRun(Base):
     status = Column(String(20), nullable=False, default="success")
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# National crop farmer guide
+# ---------------------------------------------------------------------------
+class CropNationalGuide(Base):
+    __tablename__ = "crop_national_guides"
+    __table_args__ = (
+        UniqueConstraint("crop_id", name="uq_crop_national_guide_crop"),
+        Index("ix_crop_national_guide_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    crop_id = Column(String(50), ForeignKey("crops.id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    provider = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    tokens_in = Column(Integer, nullable=True)
+    tokens_out = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    version = Column(String(20), nullable=False, default="1.0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cached crop-municipality LLM recommendation
+# ---------------------------------------------------------------------------
+class CropMunicipalityRecommendation(Base):
+    __tablename__ = "crop_municipality_recommendations"
+    __table_args__ = (
+        UniqueConstraint("crop_id", "municipality_dane_code", name="uq_crop_municipality_recommendation"),
+        Index("ix_crop_municipality_recommendation_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    crop_id = Column(String(50), ForeignKey("crops.id"), nullable=False, index=True)
+    municipality_dane_code = Column(String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    provider = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    tokens_in = Column(Integer, nullable=True)
+    tokens_out = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    version = Column(String(20), nullable=False, default="1.0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Municipality AI guide
+# ---------------------------------------------------------------------------
+class MunicipalityAIGuide(Base):
+    __tablename__ = "municipality_ai_guides"
+    __table_args__ = (
+        UniqueConstraint("municipality_dane_code", name="uq_municipality_ai_guide"),
+        Index("ix_municipality_ai_guide_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    municipality_dane_code = Column(
+        String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True
+    )
+    content = Column(Text, nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    provider = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    tokens_in = Column(Integer, nullable=True)
+    tokens_out = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    version = Column(String(20), nullable=False, default="1.0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Municipality climate enrichment (Open-Meteo fallback)
+# ---------------------------------------------------------------------------
+class MunicipalityClimateEnrichment(Base):
+    __tablename__ = "municipality_climate_enrichment"
+    __table_args__ = (
+        UniqueConstraint("municipality_dane_code", name="uq_municipality_climate_enrichment"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    municipality_dane_code = Column(
+        String(5), ForeignKey("municipalities.dane_code"), nullable=False, index=True
+    )
+    altitude = Column(Integer, nullable=True)
+    avg_temperature = Column(Float, nullable=True)
+    precipitation = Column(Float, nullable=True)
+    source = Column(String(50), nullable=False, default="open-meteo")
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 # ---------------------------------------------------------------------------

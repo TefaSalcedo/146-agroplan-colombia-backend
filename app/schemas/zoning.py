@@ -75,4 +75,55 @@ class ZoningMapResponse(BaseModel):
     cache_hit: Optional[bool] = None
 
 
+class AIGuideAlternativeCrop(BaseModel):
+    """Alternative crop suggested by the LLM for a municipality."""
+
+    crop_name: str = Field(description="Crop common name in plain Spanish")
+    why: str = Field(description="Why this crop fits the municipality, in farmer-friendly language")
+    confidence: str = Field(default="medium", description="high, medium or low")
+
+
+class AIGuideFarmingSystem(BaseModel):
+    """Farming system recommendation for a municipality."""
+
+    title: str = Field(description="System name, e.g. Vivero, Hidroponía")
+    recommendation: str = Field(description="Practical recommendation for the farmer")
+    suitable: str = Field(default="yes", description="yes, partial or no")
+
+
+class AIGuideSoilTip(BaseModel):
+    """Soil or fertilizer recommendation for a municipality."""
+
+    title: str = Field(description="Tip title")
+    content: str = Field(description="Farmer-friendly explanation")
+
+
+class MunicipalityAIGuideResponse(BaseModel):
+    """LLM-generated AI insights for a municipality."""
+
+    municipality_id: str = Field(description="Municipality DANE code")
+    municipality_name: str = Field(description="Municipality name")
+    summary: str = Field(description="Short friendly summary")
+    alternative_crops: List[AIGuideAlternativeCrop] = Field(
+        default=[], description="Crops recommended by the AI that are not in the catalog"
+    )
+    farming_systems: List[AIGuideFarmingSystem] = Field(
+        default=[], description="Farming-system recommendations for the municipality"
+    )
+    soil_and_fertilizer: List[AIGuideSoilTip] = Field(
+        default=[], description="Soil and fertilizer tips in plain language"
+    )
+    generated_at: Optional[str] = Field(default=None, description="ISO timestamp when generated")
+    expires_at: Optional[str] = Field(default=None, description="ISO timestamp when expires")
+    cached: bool = Field(default=False, description="Whether the response was served from cache")
+    provider: Optional[str] = Field(default=None, description="LLM provider used")
+    model: Optional[str] = Field(default=None, description="LLM model used")
+    tokens_in: Optional[int] = Field(default=None)
+    tokens_out: Optional[int] = Field(default=None)
+    tokens_total: Optional[int] = Field(default=None)
+    latency_ms: Optional[int] = Field(default=None)
+    status: str = Field(default="success", description="success or llm_unavailable")
+    error: Optional[str] = Field(default=None)
+
+
 

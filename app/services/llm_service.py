@@ -22,6 +22,21 @@ logger = get_logger("app.services.llm_service")
 
 PROMPT_SCHEMA_VERSION = "1.0"
 
+_FARMER_LANGUAGE_RULES_SPANISH = (
+    "REGLAS DE LENGUAJE PARA CAMPESINOS:\n"
+    "1. Usa palabras comunes del campo. NO uses términos técnicos como 'suelo franco arenoso', "
+    "'textura franco', 'pH', 'topografía', 'latitud', 'longitud', 'grados Celsius', 'msnm', "
+    "'metros sobre el nivel del mar', 'anomalía', 'precipitación' (di 'lluvia'), 'humedad relativa'.\n"
+    "2. Si necesitas hablar del suelo, di cosas como 'tierra suelta', 'tierra pesada', "
+    "'tierra que drena bien', 'tierra negra y fértil', 'tierra arcillosa', 'tierra arenosa'.\n"
+    "3. Si hablas de altura, di 'esta zona es de montaña baja', 'zona fría', 'zona templada', "
+    "'zona cálida', según corresponda. No digas la altitud en metros a menos que sea necesario.\n"
+    "4. La temperatura exprésala como 'hace frío', 'hace calor', 'es templado', 'es suave'. "
+    "No uses grados Celsius a menos que sea absolutamente necesario.\n"
+    "5. La lluvia exprésala como 'llueve poco', 'llueve bastante', 'hay buena lluvia'.\n"
+    "6. Todo en español de Colombia, claro y directo."
+)
+
 
 class LLMService:
     """LLM service with round-robin provider/model selection."""
@@ -236,11 +251,16 @@ class LLMService:
         start = time.time()
 
         system_prompt = (
-            "You are an agronomic assistant for Colombia. Given crop prediction data, "
-            "write a concise, practical explanation for a farmer. "
-            "Focus on: why the crop is or isn't suitable, key climate factors, and "
-            "one actionable recommendation. Do not invent data. Use only the provided "
-            "information. Keep it under 200 words."
+            "Eres un agrónomo colombiano que asesora a campesinos. Dado el resultado de una "
+            "predicción agrícola, escribe una explicación corta y práctica para un agricultor.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. Explica por qué el cultivo puede servir o no para ese municipio.\n"
+            "2. Menciona los factores de clima más importantes en palabras sencillas.\n"
+            "3. Da UNA recomendación concreta y útil para la finca.\n"
+            "4. No inventes datos. Usa solo la información proporcionada.\n"
+            "5. Máximo 150 palabras."
         )
 
         user_content = json.dumps(
@@ -313,7 +333,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            explanation = result.get("content", "").strip()
+            explanation = (result.get("content") or "").strip()
             logger.info("[generate_explanation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             if explanation:
@@ -356,12 +376,20 @@ class LLMService:
         start = time.time()
 
         system_prompt = (
-            "Eres un asistente agronomo para campesinos de Colombia. "
-            "Responde SIEMPRE en espanol, en un solo parrafo corto (maximo 120 palabras). "
-            "Usa lenguaje sencillo y util para el dia a dia del agricultor. "
-            "Da UNA recomendacion clara: si conviene sembrar este cultivo en este municipio, "
-            "en que meses plantar, cuidados basicos de suelo/riego, y advertencias si el clima "
-            "o suelo no son adecuados. No inventes datos; usa solo la informacion proporcionada."
+            "Eres un agrónomo colombiano que asesora a campesinos. Responde SIEMPRE en español, "
+            "en un solo párrafo corto (máximo 120 palabras).\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. Di si conviene sembrar este cultivo en este municipio.\n"
+            "2. Menciona en qué meses plantar.\n"
+            "3. Para el tiempo de cosecha usa el campo 'days_to_harvest_text'. "
+            "Si 'is_perennial' es true, menciona también el 'establishment_period_text' como el tiempo "
+            "que tarda el árbol en empezar a producir de forma estable.\n"
+            "4. Para describir la tierra usa el campo 'soil_type_simple', no 'soil_type'.\n"
+            "5. Da cuidados básicos de tierra y riego.\n"
+            "6. Menciona advertencias si el clima o la tierra no son adecuados.\n"
+            "7. No inventes datos; usa solo la información proporcionada."
         )
 
         user_content = json.dumps(
@@ -430,7 +458,14 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            text = result.get("content", "").strip()
+            text = (result.get("content") or "").strip()
+            if not text:
+                logger.warning(
+                    "[generate_crop_recommendation] Provider %s/%s returned empty content",
+                    provider["provider"],
+                    model,
+                )
+                continue
             logger.info("[generate_crop_recommendation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             return {
@@ -456,6 +491,359 @@ class LLMService:
             "latency_ms": latency_ms,
             "error": "All providers failed",
         }
+
+    def generate_national_crop_guide(
+        self,
+        crop_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate a structured national farmer guide for a crop.
+
+        The guide is written in simple Spanish for Colombian farmers and covers
+        planting, harvest, techniques and seasons. The response is a JSON object
+        with a summary and a list of sections.
+        """
+        start = time.time()
+
+        system_prompt = (
+            "Eres un agrónomo colombiano con mucha experiencia en extensión rural. "
+            "Tu trabajo es escribir una guía práctica y fácil de leer para campesinos "
+            "de Colombia que quieren sembrar un cultivo.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. No inventes datos. Usa únicamente la información del cultivo proporcionada.\n"
+            "2. Usa 'soil_type_simple' para describir la tierra, no 'soil_type'.\n"
+            "3. Usa 'days_to_harvest_text' para el tiempo de cosecha. Si 'is_perennial' es true, "
+            "usa 'establishment_period_text' para explicar cuánto tarda el árbol en empezar a producir.\n"
+            "4. La guía debe tener un resumen corto y varias secciones con título y contenido.\n"
+            "5. Si hay tips del cultivo, incorpóralos de forma natural en las secciones.\n\n"
+            "ESTRUCTURA OBLIGATORIA DEL JSON:\n"
+            "{\n"
+            '  "summary": "resumen amigable de 2 o 3 frases",\n'
+            '  "sections": [\n'
+            '    {"title": "¿Cuándo sembrar?", "content": "..."},\n'
+            '    {"title": "¿Cuánto tarda la cosecha?", "content": "..."},\n'
+            '    {"title": "Preparación del terreno", "content": "..."},\n'
+            '    {"title": "Riego y cuidados básicos", "content": "..."},\n'
+            '    {"title": "Plagas y enfermedades comunes", "content": "..."},\n'
+            '    {"title": "Cosecha y post-cosecha", "content": "..."},\n'
+            '    {"title": "Advertencias importantes", "content": "..."}\n'
+            "  ]\n"
+            "}\n\n"
+            "Las secciones deben ser concretas, útiles y fáciles de entender para una "
+            "persona que trabaja la tierra todos los días."
+        )
+
+        user_content = json.dumps(
+            {"crop": crop_data},
+            ensure_ascii=False,
+            default=str,
+        )
+
+        pool = self._get_model_pool()
+        if not pool:
+            return {
+                "summary": "",
+                "sections": [],
+                "status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": "No LLM providers configured",
+            }
+
+        first_selected = self._select_next_model(pool)
+        start_idx = pool.index(first_selected)
+        ordered_pool = pool[start_idx:] + pool[:start_idx]
+
+        for entry in ordered_pool:
+            provider = {
+                "provider": entry["provider"],
+                "api_key": entry["api_key"],
+                "base_url": entry["base_url"],
+            }
+            model = entry["model"]
+            logger.info("[generate_national_crop_guide] Calling LLM provider=%s model=%s", provider["provider"], model)
+
+            result = self._call_provider(
+                provider,
+                model,
+                system_prompt,
+                user_content,
+                response_format={"type": "json_object"},
+            )
+
+            if result is None or "error" in result:
+                logger.warning(
+                    "[generate_national_crop_guide] Provider %s/%s failed: %s",
+                    provider["provider"],
+                    model,
+                    result.get("error") if result else "None",
+                )
+                continue
+
+            latency_ms = int((time.time() - start) * 1000)
+            raw_content = result.get("content", "").strip()
+            if not raw_content:
+                logger.warning(
+                    "[generate_national_crop_guide] Provider %s/%s returned empty content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            try:
+                parsed = self._try_repair_json(raw_content)
+            except Exception as exc:
+                logger.warning(
+                    "[generate_national_crop_guide] Provider %s/%s returned unparseable content: %s",
+                    provider["provider"],
+                    model,
+                    exc,
+                )
+                continue
+
+            if not parsed or not isinstance(parsed, dict):
+                logger.warning(
+                    "[generate_national_crop_guide] Provider %s/%s returned non-JSON content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            summary = parsed.get("summary", "").strip()
+            sections = parsed.get("sections", [])
+            if not isinstance(sections, list):
+                sections = []
+
+            normalized_sections = []
+            for sec in sections:
+                if isinstance(sec, dict) and sec.get("title") and sec.get("content"):
+                    normalized_sections.append({
+                        "title": str(sec["title"]).strip(),
+                        "content": str(sec["content"]).strip(),
+                    })
+
+            logger.info(
+                "[generate_national_crop_guide] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)",
+                provider["provider"],
+                model,
+                latency_ms,
+                result.get("tokens_in"),
+                result.get("tokens_out"),
+            )
+
+            return {
+                "summary": summary,
+                "sections": normalized_sections,
+                "status": "success",
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+                "latency_ms": latency_ms,
+                "error": None,
+            }
+
+        return {
+            "summary": "",
+            "sections": [],
+            "status": "llm_unavailable",
+            "provider": None,
+            "model": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": "All providers failed",
+        }
+
+    def generate_municipality_ai_guide(
+        self,
+        municipality_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate AI-driven recommendations for a municipality.
+
+        Returns structured insights: alternative crops, farming systems and soil/
+        fertilizer advice written in plain Spanish for Colombian farmers.
+        """
+        start = time.time()
+
+        system_prompt = (
+            "Eres un agrónomo colombiano que asesora a campesinos de todo el país. "
+            "Tu trabajo es dar recomendaciones PRÁCTICAS y FÁCILES DE ENTENDER para un "
+            "municipio específico.\n\n"
+            + _FARMER_LANGUAGE_RULES_SPANISH
+            + "\n\n"
+            "REGLAS DE CONTENIDO:\n"
+            "1. En 'alternative_crops' sugiere cultivos que NO estén en la lista del "
+            "municipio. Como base de inspiración usa la lista 'alternative_crops_from_ecocrop_fao' "
+            "que ya filtré por clima, altura y lluvia del municipio. Puedes incluir cultivos de "
+            "esa lista y complementar con tu conocimiento agronómico cuando sea necesario. "
+            "Devuelve entre 3 y 7 cultivos alternativos; nunca más de 7. "
+            "Explica de forma concreta y diferente para cada uno por qué puede funcionar allí: "
+            "menciona si le gusta el frío, el calor, la lluvia, la altura, la tierra o el tiempo de cosecha. "
+            "No repitas la misma frase para todos los cultivos.\n"
+            "2. En 'farming_systems' recomienda entre 3 y 7 sistemas de producción que "
+            "tengan sentido para el municipio: viveros, semilleros, hidroponía, aboneras, "
+            "cultivo en eras o camellones, zanjas, riego por goteo, riego por gravedad, "
+            "aspersión, invernadero o cubierta de plástico, asociación de cultivos, "
+            "rotación de cultivos, barreras vivas, sistema de drenaje, protección contra "
+            "heladas, etc. Elige solo los que realmente apliquen y explica por qué. "
+            "Si alguno no es conveniente, indícalo con suitable='no'.\n"
+            "3. En 'soil_and_fertilizer' da entre 3 y 7 consejos sencillos sobre abonos orgánicos, "
+            "cómo mejorar la tierra, cuándo fertilizar, manejo de plagas naturales, cobertura "
+            "del suelo, labranza, entre otros.\n\n"
+            "ESTRUCTURA OBLIGATORIA DEL JSON:\n"
+            "{\n"
+            '  "summary": "resumen de 2 o 3 frases",\n'
+            '  "alternative_crops": [\n'
+            '    {"crop_name": "nombre común", "why": "por qué sirve aquí", "confidence": "high|medium|low"}\n'
+            '  ],\n'
+            '  "farming_systems": [\n'
+            '    {"title": "Vivero", "recommendation": "...", "suitable": "yes|partial|no"}\n'
+            '  ],\n'
+            '  "soil_and_fertilizer": [\n'
+            '    {"title": "título", "content": "..."}\n'
+            '  ]\n'
+            "}\n\n"
+            "Las recomendaciones deben ser concretas, seguras y útiles para una persona que "
+            "trabaja directamente la tierra."
+        )
+
+        user_content = json.dumps(
+            {"municipality": municipality_data},
+            ensure_ascii=False,
+            default=str,
+        )
+
+        pool = self._get_model_pool()
+        if not pool:
+            return {
+                "summary": "",
+                "alternative_crops": [],
+                "farming_systems": [],
+                "soil_and_fertilizer": [],
+                "status": "llm_unavailable",
+                "provider": None,
+                "model": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": "No LLM providers configured",
+            }
+
+        first_selected = self._select_next_model(pool)
+        start_idx = pool.index(first_selected)
+        ordered_pool = pool[start_idx:] + pool[:start_idx]
+
+        for entry in ordered_pool:
+            provider = {
+                "provider": entry["provider"],
+                "api_key": entry["api_key"],
+                "base_url": entry["base_url"],
+            }
+            model = entry["model"]
+            logger.info(
+                "[generate_municipality_ai_guide] Calling LLM provider=%s model=%s",
+                provider["provider"],
+                model,
+            )
+
+            result = self._call_provider(
+                provider,
+                model,
+                system_prompt,
+                user_content,
+                response_format={"type": "json_object"},
+            )
+
+            if result is None or "error" in result:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s failed: %s",
+                    provider["provider"],
+                    model,
+                    result.get("error") if result else "None",
+                )
+                continue
+
+            latency_ms = int((time.time() - start) * 1000)
+            raw_content = result.get("content", "").strip()
+            if not raw_content:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned empty content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            try:
+                parsed = self._try_repair_json(raw_content)
+            except Exception as exc:
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned unparseable content: %s",
+                    provider["provider"],
+                    model,
+                    exc,
+                )
+                continue
+
+            if not parsed or not isinstance(parsed, dict):
+                logger.warning(
+                    "[generate_municipality_ai_guide] Provider %s/%s returned non-JSON content",
+                    provider["provider"],
+                    model,
+                )
+                continue
+
+            logger.info(
+                "[generate_municipality_ai_guide] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)",
+                provider["provider"],
+                model,
+                latency_ms,
+                result.get("tokens_in"),
+                result.get("tokens_out"),
+            )
+
+            return {
+                "summary": parsed.get("summary", "").strip(),
+                "alternative_crops": self._normalize_list(parsed.get("alternative_crops", [])),
+                "farming_systems": self._normalize_list(parsed.get("farming_systems", [])),
+                "soil_and_fertilizer": self._normalize_list(parsed.get("soil_and_fertilizer", [])),
+                "status": "success",
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+                "latency_ms": latency_ms,
+                "error": None,
+            }
+
+        return {
+            "summary": "",
+            "alternative_crops": [],
+            "farming_systems": [],
+            "soil_and_fertilizer": [],
+            "status": "llm_unavailable",
+            "provider": None,
+            "model": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": "All providers failed",
+        }
+
+    @staticmethod
+    def _normalize_list(value: Any) -> List[Dict[str, Any]]:
+        """Return a clean list of dicts from an LLM JSON field."""
+        if not isinstance(value, list):
+            return []
+        cleaned = []
+        for item in value:
+            if isinstance(item, dict):
+                cleaned.append({str(k): str(v).strip() for k, v in item.items()})
+        return cleaned
 
     def is_configured(self) -> bool:
         """Check if at least one LLM provider is configured."""

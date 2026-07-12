@@ -25,7 +25,12 @@ class CropResponse(BaseModel):
     scientific_name: str = Field(description="Scientific name")
     image: str = Field(description="URL or path to crop image")
     days_to_harvest: int = Field(description="Typical days to harvest")
+    days_to_harvest_text: str = Field(description="Farmer-friendly days to harvest (e.g. 2 meses)")
+    establishment_period_days: Optional[int] = Field(default=None, description="Days until the crop reaches productive maturity (permanent crops)")
+    establishment_period_text: Optional[str] = Field(default=None, description="Farmer-friendly establishment period")
+    is_perennial: bool = Field(default=False, description="Whether the crop is permanent/perennial")
     soil_type: str = Field(description="Recommended soil type")
+    soil_type_simple: str = Field(description="Recommended soil type in plain language")
     ideal_temperature: str = Field(description="Ideal temperature range")
     humidity: str = Field(description="Ideal humidity range")
     precipitation: str = Field(description="Ideal precipitation range")
@@ -61,6 +66,9 @@ class CropRecommendationResponse(BaseModel):
     municipality_id: str = Field(description="Municipality DANE code")
     municipality_name: str = Field(description="Municipality name")
     text: str = Field(description="Plain-language recommendation for the farmer")
+    cached: bool = Field(default=False, description="Whether the response was served from cache")
+    generated_at: Optional[str] = Field(default=None, description="ISO timestamp when the recommendation was generated")
+    expires_at: Optional[str] = Field(default=None, description="ISO timestamp when the cached recommendation expires")
     provider: Optional[str] = Field(default=None, description="LLM provider used")
     model: Optional[str] = Field(default=None, description="LLM model used")
     tokens_in: Optional[int] = Field(default=None, description="Input tokens consumed")
@@ -68,4 +76,31 @@ class CropRecommendationResponse(BaseModel):
     tokens_total: Optional[int] = Field(default=None, description="Total tokens consumed")
     latency_ms: Optional[int] = Field(default=None, description="LLM call latency in milliseconds")
     status: str = Field(description="LLM generation status: success or llm_unavailable")
+    error: Optional[str] = Field(default=None, description="Error message if generation failed")
+
+
+class CropNationalGuideSection(BaseModel):
+    """Single section of a farmer-friendly national crop guide."""
+
+    title: str = Field(description="Section title")
+    content: str = Field(description="Farmer-friendly explanation for this section")
+
+
+class CropNationalGuideResponse(BaseModel):
+    """LLM-generated national farmer guide for a crop, cached for 3 months."""
+
+    crop_id: str = Field(description="Crop identifier")
+    crop_name: str = Field(description="Crop common name")
+    summary: str = Field(description="Short friendly summary of the guide")
+    sections: List[CropNationalGuideSection] = Field(description="Structured guide sections")
+    generated_at: Optional[str] = Field(default=None, description="ISO timestamp when the guide was generated")
+    expires_at: Optional[str] = Field(default=None, description="ISO timestamp when the guide expires (3 months)")
+    cached: bool = Field(default=False, description="Whether the response was served from cache")
+    provider: Optional[str] = Field(default=None, description="LLM provider used")
+    model: Optional[str] = Field(default=None, description="LLM model used")
+    tokens_in: Optional[int] = Field(default=None, description="Input tokens consumed")
+    tokens_out: Optional[int] = Field(default=None, description="Output tokens consumed")
+    tokens_total: Optional[int] = Field(default=None, description="Total tokens consumed")
+    latency_ms: Optional[int] = Field(default=None, description="LLM call latency in milliseconds")
+    status: str = Field(default="success", description="LLM generation status: success or llm_unavailable")
     error: Optional[str] = Field(default=None, description="Error message if generation failed")
