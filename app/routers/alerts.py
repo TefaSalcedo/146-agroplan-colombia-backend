@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ def _generate_alerts_from_forecasts(
 ) -> list[AlertResponse]:
     """Generate simple climate alerts from stored forecast records."""
     alerts: list[AlertResponse] = []
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
 
     if not forecasts:
         alerts.append(
@@ -108,14 +108,14 @@ def get_alerts(
     municipality_id: str = Path(..., description="AgroPlan municipality ID"),
     db: Session = Depends(get_db),
 ):
-    municipality = db.query(Municipality).filter(Municipality.id == municipality_id).first()
+    municipality = db.query(Municipality).filter(Municipality.dane_code == municipality_id).first()
     if not municipality:
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     forecasts = (
         db.query(MunicipalityClimateForecast)
-        .filter(MunicipalityClimateForecast.municipality_id == municipality_id)
+        .filter(MunicipalityClimateForecast.municipality_dane_code == municipality_id)
         .filter(MunicipalityClimateForecast.forecast_date >= today)
         .filter(MunicipalityClimateForecast.forecast_date <= today + timedelta(days=14))
         .all()

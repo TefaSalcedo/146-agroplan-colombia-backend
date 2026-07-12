@@ -8,6 +8,8 @@ from app.models import Municipality, MunicipalityClimateForecast
 from app.schemas.alerts import ForecastDayResponse
 from app.schemas.system import ErrorResponse
 
+from datetime import datetime, timedelta, timezone
+
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
 
@@ -33,16 +35,16 @@ def get_daily_forecast(
     days: int = Query(7, ge=1, le=90, description="Number of days to return (1-90)"),
     db: Session = Depends(get_db),
 ):
-    municipality = db.query(Municipality).filter(Municipality.id == municipality_id).first()
+    municipality = db.query(Municipality).filter(Municipality.dane_code == municipality_id).first()
     if not municipality:
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     end_date = today + timedelta(days=days)
 
     records = (
         db.query(MunicipalityClimateForecast)
-        .filter(MunicipalityClimateForecast.municipality_id == municipality_id)
+        .filter(MunicipalityClimateForecast.municipality_dane_code == municipality_id)
         .filter(MunicipalityClimateForecast.forecast_date >= today)
         .filter(MunicipalityClimateForecast.forecast_date <= end_date)
         .order_by(MunicipalityClimateForecast.forecast_date.asc())

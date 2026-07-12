@@ -1,11 +1,15 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.crop import CropResponseLite, TopCropResponse
-from app.schemas.recommendation import NextPlantingSeason, RecommendationRequest, RecommendationResponse
+from app.schemas.recommendation import (
+    NextPlantingSeason,
+    RecommendationRequest,
+    RecommendationResponse,
+)
 from app.schemas.system import ErrorResponse
 from app.services.crop_catalog import CropCatalog
 from app.services.mock_predictor import MockPredictor
@@ -45,7 +49,7 @@ def get_recommendations(
         examples={
             "municipality_recommendation": {
                 "summary": "Recommendations for one municipality",
-                "value": {"municipality_id": "17001"},
+                "value": {"municipality_id": "05001"},
             }
         },
     ),
@@ -55,7 +59,7 @@ def get_recommendations(
     if not municipality:
         raise HTTPException(status_code=404, detail="Municipality not found")
 
-    all_crops = crop_catalog.get_all_crops()
+    all_crops = crop_catalog.get_all_crops(db)
 
     crop_scores = []
     for crop in all_crops:
@@ -94,12 +98,12 @@ def get_recommendations(
         for crop, _, _ in crop_scores[1:5]
     ]
 
-    current_month = datetime.now().month
+    current_month = datetime.now(timezone.utc).month
     next_month = current_month % 12 + 1
 
     plantable_crops = [
         crop.id for crop in all_crops
-        if next_month in crop.planting_months
+        if next_month in (crop.planting_months or [])
     ]
 
     next_planting_season = NextPlantingSeason(
