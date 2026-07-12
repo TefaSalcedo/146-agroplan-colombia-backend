@@ -34,6 +34,14 @@ def _sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
+def _find_first_file(candidates: List[Path]) -> Optional[Path]:
+    """Return the first existing file from a list of candidate paths."""
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
 def _missing_files(local_dir: Path, filenames: List[str]) -> List[str]:
     """Return the subset of filenames that do not exist in local_dir."""
     missing = []
@@ -253,17 +261,27 @@ class ModelLoader:
     def _load_zoning_model(self, models_dir: Path):
         """Load the zoning LightGBM model and its preprocessor."""
         zoning_path = models_dir / "zoning"
+        bundle_path = zoning_path / "zoning"
 
         # Support both HF uploaded name and canonical bundle name
         model_candidates = [
-            models_dir / "zoning" / "lightgbm_tuned_multi_random_holdout.pkl",
-            models_dir / "zoning" / "model.pkl",
+            zoning_path / "lightgbm_tuned_multi_random_holdout.pkl",
+            zoning_path / "model.pkl",
             models_dir / "model.pkl",
         ]
-        model_file = next((p for p in model_candidates if p.exists()), None)
-        preprocessor_file = zoning_path / "preprocessor.pkl"
-        schema_file = zoning_path / "feature_schema.json"
-        manifest_file = zoning_path / "manifest.json"
+        model_file = _find_first_file(model_candidates)
+        preprocessor_file = _find_first_file([
+            bundle_path / "preprocessor.pkl",
+            zoning_path / "preprocessor.pkl",
+        ])
+        schema_file = _find_first_file([
+            bundle_path / "feature_schema.json",
+            zoning_path / "feature_schema.json",
+        ])
+        manifest_file = _find_first_file([
+            bundle_path / "manifest.json",
+            zoning_path / "manifest.json",
+        ])
 
         if not model_file:
             print("[model_loader] Zoning model not found")
@@ -297,17 +315,27 @@ class ModelLoader:
     def _load_yield_models(self, models_dir: Path):
         """Load the yield XGBoost and LightGBM models and ensemble weights."""
         yield_path = models_dir / "yield"
+        bundle_path = yield_path / "yield"
 
         # Support both cleaned HF names and canonical bundle names
         xgb_candidates = [yield_path / "xgb_model.pkl", yield_path / "xgboost_top20_cleaned.pkl"]
         lgbm_candidates = [yield_path / "lgbm_model.pkl", yield_path / "lightgbm_top20_cleaned.pkl"]
 
-        xgb_file = next((p for p in xgb_candidates if p.exists()), None)
-        lgbm_file = next((p for p in lgbm_candidates if p.exists()), None)
+        xgb_file = _find_first_file(xgb_candidates)
+        lgbm_file = _find_first_file(lgbm_candidates)
 
-        preprocessor_file = yield_path / "preprocessor.pkl"
-        schema_file = yield_path / "feature_schema.json"
-        weights_file = yield_path / "weights.json"
+        preprocessor_file = _find_first_file([
+            bundle_path / "preprocessor.pkl",
+            yield_path / "preprocessor.pkl",
+        ])
+        schema_file = _find_first_file([
+            bundle_path / "feature_schema.json",
+            yield_path / "feature_schema.json",
+        ])
+        weights_file = _find_first_file([
+            bundle_path / "weights.json",
+            yield_path / "weights.json",
+        ])
 
         if xgb_file:
             self.yield_xgb_model = joblib.load(str(xgb_file))
@@ -346,40 +374,59 @@ class ModelLoader:
         """Load reference Parquet profiles for k-NN fallback and feature building."""
         import pandas as pd
 
-        zoning_reference_file = models_dir / "models" / "zoning_reference.parquet"
-        if zoning_reference_file.exists():
+        zoning_models_dir = models_dir / "zoning" / "models"
+        yield_models_dir = models_dir / "yield" / "models"
+        yield_data_dir = models_dir / "yield" / "data"
+
+        zoning_reference_file = _find_first_file([
+            zoning_models_dir / "zoning_reference.parquet",
+            models_dir / "models" / "zoning_reference.parquet",
+        ])
+        if zoning_reference_file:
             try:
                 self.knn_fallback = pd.read_parquet(str(zoning_reference_file))
                 print(f"[model_loader] Loaded zoning reference profiles: {len(self.knn_fallback)} rows")
             except Exception as e:
                 print(f"[model_loader] Could not load zoning reference profiles: {e}")
 
-        municipality_profiles_file = models_dir / "models" / "municipality_profiles.parquet"
-        if municipality_profiles_file.exists():
+        municipality_profiles_file = _find_first_file([
+            zoning_models_dir / "municipality_profiles.parquet",
+            models_dir / "models" / "municipality_profiles.parquet",
+        ])
+        if municipality_profiles_file:
             try:
                 self.municipality_profiles = pd.read_parquet(str(municipality_profiles_file))
                 print(f"[model_loader] Loaded municipality profiles: {len(self.municipality_profiles)} rows")
             except Exception as e:
                 print(f"[model_loader] Could not load municipality profiles: {e}")
 
-        yield_profiles_file = models_dir / "models" / "yield_profiles.parquet"
-        if yield_profiles_file.exists():
+        yield_profiles_file = _find_first_file([
+            yield_models_dir / "yield_profiles.parquet",
+            models_dir / "models" / "yield_profiles.parquet",
+        ])
+        if yield_profiles_file:
             try:
                 self.yield_profiles = pd.read_parquet(str(yield_profiles_file))
                 print(f"[model_loader] Loaded yield profiles: {len(self.yield_profiles)} rows")
             except Exception as e:
                 print(f"[model_loader] Could not load yield profiles: {e}")
 
-        crop_features_file = models_dir / "data" / "crop_features_integrated.csv"
-        if crop_features_file.exists():
+        crop_features_file = _find_first_file([
+            yield_data_dir / "crop_features_integrated.csv",
+            models_dir / "data" / "crop_features_integrated.csv",
+        ])
+        if crop_features_file:
             try:
                 self.crop_features = pd.read_csv(str(crop_features_file))
                 print(f"[model_loader] Loaded crop features: {len(self.crop_features)} rows")
             except Exception as e:
                 print(f"[model_loader] Could not load crop features: {e}")
 
-        calendar_file = models_dir / "data" / "calendar_for_eva.csv"
-        if calendar_file.exists():
+        calendar_file = _find_first_file([
+            yield_data_dir / "calendar_for_eva.csv",
+            models_dir / "data" / "calendar_for_eva.csv",
+        ])
+        if calendar_file:
             try:
                 self.calendar_for_eva = pd.read_csv(str(calendar_file))
                 print(f"[model_loader] Loaded EVA calendar: {len(self.calendar_for_eva)} rows")
@@ -400,8 +447,11 @@ class ModelLoader:
 
     def _run_golden_vectors(self):
         """Run golden vector validation to verify model integrity."""
-        golden_file = Path(settings.ml_models_path) / "zoning" / "golden_vectors.json"
-        if not golden_file.exists():
+        golden_file = _find_first_file([
+            Path(settings.ml_models_path) / "zoning" / "zoning" / "golden_vectors.json",
+            Path(settings.ml_models_path) / "zoning" / "golden_vectors.json",
+        ])
+        if not golden_file:
             print("[model_loader] No golden vectors file found, skipping validation")
             return
 
