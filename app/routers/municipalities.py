@@ -1,12 +1,37 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, status
 from sqlalchemy.orm import Session
+
 from app.database import get_db
+from app.models import Department, Municipality
 from app.services.municipality_catalog import MunicipalityCatalog
-from app.schemas.municipality import MunicipalityResponse, MunicipalityListResponse, DepartmentListResponse
+from app.schemas.municipality import (
+    MunicipalityResponse,
+    MunicipalityListResponse,
+    DepartmentListResponse,
+    DepartmentResponse,
+)
 from app.schemas.system import ErrorResponse
 
 router = APIRouter(prefix="/municipalities", tags=["municipalities"])
 catalog = MunicipalityCatalog()
+
+
+def _municipality_to_response(muni: Municipality, db: Session) -> MunicipalityResponse:
+    """Convert a Municipality ORM object to a response, joining department name."""
+    dept = db.query(Department).filter(Department.dane_code == muni.department_dane_code).first()
+    dept_name = dept.name if dept else ""
+    return MunicipalityResponse(
+        id=muni.dane_code,
+        name=muni.name,
+        department=dept_name,
+        department_id=muni.department_dane_code,
+        lat=muni.lat,
+        lng=muni.lng,
+        altitude=muni.altitude or 0,
+        avg_temperature=muni.avg_temperature,
+        precipitation=muni.precipitation,
+        dane_code=muni.dane_code,
+    )
 
 
 @router.get(
@@ -17,18 +42,17 @@ catalog = MunicipalityCatalog()
         "Returns all municipalities covered by AgroPlan.\n\n"
         "Use cases:\n"
         "- Populate municipality selectors in frontend forms.\n"
-        "- Filter the catalog by department for localized workflows."
+        "- Filter the catalog by department name or DANE code for localized workflows."
     ),
 )
 def get_municipalities(
-    department: str | None = Query(None, description="Optional department filter (exact match)"),
+    department: str | None = Query(None, description="Filter by department name (partial match)"),
+    department_id: str | None = Query(None, description="Filter by department DANE code (2 digits, exact match)"),
     db: Session = Depends(get_db),
 ):
-    municipalities = catalog.get_municipalities(db, department)
-    return MunicipalityListResponse(
-        municipalities=municipalities,
-        count=len(municipalities),
-    )
+    municipalities = catalog.get_municipalities(db, department=department, department_id=department_id)
+    responses = [_municipality_to_response(m, db) for m in municipalities]
+    return MunicipalityListResponse(municipalities=responses, count=len(responses))
 
 
 @router.get(
@@ -36,7 +60,7 @@ def get_municipalities(
     response_model=DepartmentListResponse,
     summary="List available departments",
     description=(
-        "Returns unique department names available in the municipalities dataset.\n\n"
+        "Returns all departments with DANE codes and municipality counts.\n\n"
         "Use cases:\n"
         "- Build department dropdowns before municipality selection.\n"
         "- Validate if a department is represented in loaded data."
@@ -44,7 +68,19 @@ def get_municipalities(
 )
 def get_departments(db: Session = Depends(get_db)):
     departments = catalog.get_departments(db)
-    return DepartmentListResponse(departments=departments)
+    dept_responses = [
+        DepartmentResponse(
+            dane_code=d["dane_code"],
+            name=d["name"],
+            municipality_count=d["municipality_count"],
+        )
+        for d in departments
+    ]
+    return DepartmentListResponse(
+        departments=[d.name for d in dept_responses],
+        departments_detailed=dept_responses,
+        count=len(dept_responses),
+    )
 
 
 @router.get(
@@ -84,8 +120,9 @@ def get_nearby_municipality(
             detail = f"Nearest municipality is {distance_km:.1f} km away, outside the allowed distance"
         raise HTTPException(status_code=404, detail=detail)
 
-    municipality.distance_km = round(distance_km or 0, 2)
-    return municipality
+    response = _municipality_to_response(municipality, db)
+    response.distance_km = round(distance_km or 0, 2)
+    return response
 
 
 @router.get(
@@ -93,7 +130,7 @@ def get_nearby_municipality(
     response_model=MunicipalityResponse,
     summary="Get municipality by ID",
     description=(
-        "Returns one municipality by its AgroPlan identifier.\n\n"
+        "Returns one municipality by its DANE code (5 digits).\n\n"
         "Use cases:\n"
         "- Resolve user selections from stored IDs.\n"
         "- Fetch municipality metadata before prediction calls."
@@ -106,10 +143,10 @@ def get_nearby_municipality(
     },
 )
 def get_municipality(
-    municipality_id: str = Path(..., description="AgroPlan municipality ID"),
+    municipality_id: str = Path(..., description="Municipality DANE code (5 digits, e.g. 05001)"),
     db: Session = Depends(get_db),
 ):
     municipality = catalog.get_municipality_by_id(db, municipality_id)
     if not municipality:
         raise HTTPException(status_code=404, detail="Municipality not found")
-    return municipality
+    return _municipality_to_response(municipality, db)

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from app.services.crop_catalog import CropCatalog
 from app.schemas.crop import CropResponse, CropListResponse, CropResponseLite
 from app.schemas.system import ErrorResponse
@@ -12,14 +15,14 @@ catalog = CropCatalog()
     response_model=CropListResponse,
     summary="List full crop catalog",
     description=(
-        "Returns all crops with full agronomic details and educational content.\n\n"
+        "Returns all ML-supported crops with full agronomic details.\n\n"
         "Use cases:\n"
         "- Detailed crop profile pages.\n"
         "- Inputs for recommendation and planning interfaces."
     ),
 )
-def get_crops():
-    crops = catalog.get_all_crops()
+def get_crops(db: Session = Depends(get_db)):
+    crops = catalog.get_all_crops(db)
     return CropListResponse(crops=crops, count=len(crops))
 
 
@@ -34,8 +37,8 @@ def get_crops():
         "- Recommendation side panels with minimal payload."
     ),
 )
-def get_crops_lite():
-    return catalog.get_crops_lite()
+def get_crops_lite(db: Session = Depends(get_db)):
+    return catalog.get_crops_lite(db)
 
 
 @router.get(
@@ -55,8 +58,11 @@ def get_crops_lite():
         }
     },
 )
-def get_crop(crop_id: str = Path(..., description="Crop identifier (for example: cafe, maiz)")):
-    crop = catalog.get_crop_by_id(crop_id)
+def get_crop(
+    crop_id: str = Path(..., description="Crop identifier (e.g. aguacate, pina)"),
+    db: Session = Depends(get_db),
+):
+    crop = catalog.get_crop_by_id(db, crop_id)
     if not crop:
         raise HTTPException(status_code=404, detail="Crop not found")
     return crop
