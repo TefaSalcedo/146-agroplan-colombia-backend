@@ -1,0 +1,69 @@
+name: Deploy to Oracle VM
+
+on:
+  workflow_run:
+    workflows: ["Build and Publish Docker Image"]
+    branches: [main]
+    types:
+      - completed
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy compose file to Oracle VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
+          source: "docker-compose.prod.yml"
+          target: "/opt/agroplan/"
+          strip_components: 0
+
+      - name: Deploy on Oracle VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd /opt/agroplan
+
+            if [ ! -f .env ]; then
+              echo "ERROR: /opt/agroplan/.env does not exist on the VM."
+              echo "Create it with the production secrets before running this workflow."
+              exit 1
+            fi
+
+            echo "Pulling latest image..."
+            docker pull ghcr.io/${{ github.repository }}:main
+
+            echo "Restarting services..."
+            docker compose -f docker-compose.prod.yml down
+            docker compose -f docker-compose.prod.yml up -d
+
+            echo "Waiting for API health check..."
+            for i in {1..30}; do
+              if curl -fsS http://localhost:8000/api/v1/health > /dev/null; then
+                echo "API is healthy."
+                exit 0
+              fi
+              echo "Retry $i/30..."
+              sleep 5
+            done
+
+            echo "ERROR: API health check failed."
+            docker compose -f docker-compose.prod.yml logs api --tail=50
+            exit 1
