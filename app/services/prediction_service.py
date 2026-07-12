@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 import numpy as np
+import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -30,6 +31,55 @@ _ZONING_CLASS_TO_API = {
     "media": "medium",
     "alta": "high",
 }
+
+
+def _parse_months_string(value: Any) -> List[int]:
+    """Parse a comma-separated month string into a list of ints."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return []
+    return [int(m.strip()) for m in str(value).split(",") if m.strip().isdigit()]
+
+
+def _get_crop_calendar_info(db: Session, crop_id: str, loader: Any) -> Dict[str, Any]:
+    """Return crop calendar info from EVA/FAO data or fallback to crop catalog."""
+    from app.services.crop_catalog import CropCatalog
+
+    crop_catalog = CropCatalog()
+    crop = crop_catalog.get_crop_model_by_id(db, crop_id)
+
+    defaults = {
+        "planting_months": crop.planting_months if crop else [],
+        "duration_days_min": crop.days_to_harvest if crop else 90,
+        "duration_days_max": crop.days_to_harvest if crop else 120,
+        "cycle_days_min": crop.days_to_harvest if crop else 90,
+        "cycle_days_max": crop.days_to_harvest if crop else 120,
+    }
+
+    if loader is None or loader.calendar_for_eva is None:
+        return defaults
+
+    try:
+        from app.services.feature_builder import _get_calendar_row
+
+        row = _get_calendar_row(loader, crop_id)
+        if row is None:
+            return defaults
+
+        fao_months = _parse_months_string(row.get("fao_sowing_months"))
+        gmin = row.get("gmin_dias")
+        gmax = row.get("gmax_dias")
+        fao_dur_min = row.get("fao_duration_min_dias")
+        fao_dur_max = row.get("fao_duration_max_dias")
+
+        return {
+            "planting_months": fao_months if fao_months else defaults["planting_months"],
+            "duration_days_min": int(fao_dur_min) if pd.notna(fao_dur_min) else (int(gmin) if pd.notna(gmin) else defaults["duration_days_min"]),
+            "duration_days_max": int(fao_dur_max) if pd.notna(fao_dur_max) else (int(gmax) if pd.notna(gmax) else defaults["duration_days_max"]),
+            "cycle_days_min": int(gmin) if pd.notna(gmin) else defaults["cycle_days_min"],
+            "cycle_days_max": int(gmax) if pd.notna(gmax) else defaults["cycle_days_max"],
+        }
+    except Exception:
+        return defaults
 
 
 def _predict_yield_with_ensemble(db: Session, crop_id: str, municipality_id: str) -> Optional[Dict]:
@@ -436,20 +486,67 @@ class PredictionService:
         # Try real yield ensemble first; fall back to mock if artifacts are not ready
         yield_result = _predict_yield_with_ensemble(db, crop_id, municipality.dane_code)
 
-        # Mock top 3 harvest months (future: use yield model + EVA/FAO)
+        # Build real calendar info from EVA/FAO when available
+        loader = self._get_model_loader()
+        calendar_info = _get_crop_calendar_info(db, crop_id, loader)
+        planting_months = calendar_info["planting_months"]
+        duration_min = calendar_info["duration_days_min"]
+        duration_max = calendar_info["duration_days_max"]
+
+        # Determine top 3 harvest months from planting months + cycle duration
         top_harvest = []
-        for i in range(min(3, horizon_months)):
-            mf = monthly_forecasts[i]
-            top_harvest.append({
-                "harvest_month": mf["month"],
-                "harvest_year": mf["year"],
-                "harvest_month_name": MONTHS_LONG[mf["month"] - 1],
-                "score": 0.75 - (i * 0.1),
-                "planting_months": crop.planting_months or [],
-                "planting_year": mf["year"],
-                "duration_days_min": crop.days_to_harvest,
-                "duration_days_max": crop.days_to_harvest,
-            })
+        current_year = today.year
+        if planting_months:
+            candidates = []
+            for pm in planting_months:
+                # If planting month is before current month, assume next year
+                year_offset = 1 if pm < today.month else 0
+                harvest_month = ((pm - 1 + (duration_min // 30)) % 12) + 1
+                harvest_year = current_year + year_offset + ((pm - 1 + (duration_min // 30)) // 12)
+                candidates.append({
+                    "harvest_month": harvest_month,
+                    "harvest_year": harvest_year,
+                    "planting_month": pm,
+                    "planting_year": current_year + year_offset,
+                    "score": 0.0,
+                })
+
+            # Score by closeness to current month and yield signal
+            for cand in candidates:
+                # Month distance (0 = current month, lower is better)
+                month_dist = abs(((cand["harvest_month"] - today.month) + 6) % 12 - 6)
+                yield_score = 0.0
+                if yield_result and yield_result.get("yield_prediction") is not None:
+                    # Normalize crudely: higher yield = higher score
+                    yield_score = min(1.0, max(0.0, yield_result["yield_prediction"] / 30.0))
+                cand["score"] = round(0.7 * (1 - month_dist / 6.0) + 0.3 * yield_score, 3)
+
+            candidates.sort(key=lambda x: x["score"], reverse=True)
+            for cand in candidates[:3]:
+                top_harvest.append({
+                    "harvest_month": cand["harvest_month"],
+                    "harvest_year": cand["harvest_year"],
+                    "harvest_month_name": MONTHS_LONG[cand["harvest_month"] - 1],
+                    "score": cand["score"],
+                    "planting_months": [cand["planting_month"]],
+                    "planting_year": cand["planting_year"],
+                    "duration_days_min": duration_min,
+                    "duration_days_max": duration_max,
+                })
+        else:
+            # Fallback: spread across horizon
+            for i in range(min(3, horizon_months)):
+                mf = monthly_forecasts[i]
+                top_harvest.append({
+                    "harvest_month": mf["month"],
+                    "harvest_year": mf["year"],
+                    "harvest_month_name": MONTHS_LONG[mf["month"] - 1],
+                    "score": 0.75 - (i * 0.1),
+                    "planting_months": crop.planting_months or [],
+                    "planting_year": mf["year"],
+                    "duration_days_min": duration_min,
+                    "duration_days_max": duration_max,
+                })
 
         if yield_result:
             return {

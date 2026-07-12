@@ -124,6 +124,9 @@ def _resolve_yield_files(local_dir: Path) -> List[str]:
         "yield/manifest.json",
         # Profiles
         "models/yield_profiles.parquet",
+        # Auxiliary crop/calendar datasets for feature building and calendars
+        "data/crop_features_integrated.csv",
+        "data/calendar_for_eva.csv",
     ])
     return files
 
@@ -163,6 +166,8 @@ class ModelLoader:
         self.knn_fallback = None
         self.municipality_profiles = None
         self.yield_profiles = None
+        self.crop_features = None
+        self.calendar_for_eva = None
 
         self._profiles_loaded = False
         self._golden_vectors_passed: Optional[bool] = None
@@ -366,7 +371,32 @@ class ModelLoader:
             except Exception as e:
                 print(f"[model_loader] Could not load yield profiles: {e}")
 
-        if self.knn_fallback is not None or self.municipality_profiles is not None or self.yield_profiles is not None:
+        crop_features_file = models_dir / "data" / "crop_features_integrated.csv"
+        if crop_features_file.exists():
+            try:
+                self.crop_features = pd.read_csv(str(crop_features_file))
+                print(f"[model_loader] Loaded crop features: {len(self.crop_features)} rows")
+            except Exception as e:
+                print(f"[model_loader] Could not load crop features: {e}")
+
+        calendar_file = models_dir / "data" / "calendar_for_eva.csv"
+        if calendar_file.exists():
+            try:
+                self.calendar_for_eva = pd.read_csv(str(calendar_file))
+                print(f"[model_loader] Loaded EVA calendar: {len(self.calendar_for_eva)} rows")
+            except Exception as e:
+                print(f"[model_loader] Could not load EVA calendar: {e}")
+
+        if any(
+            x is not None
+            for x in [
+                self.knn_fallback,
+                self.municipality_profiles,
+                self.yield_profiles,
+                self.crop_features,
+                self.calendar_for_eva,
+            ]
+        ):
             self._profiles_loaded = True
 
     def _run_golden_vectors(self):
@@ -494,6 +524,8 @@ class ModelLoader:
             "knn_fallback_available": self.is_knn_fallback_available(),
             "municipality_profiles_loaded": self.municipality_profiles is not None,
             "yield_profiles_loaded": self.yield_profiles is not None,
+            "crop_features_loaded": self.crop_features is not None,
+            "calendar_for_eva_loaded": self.calendar_for_eva is not None,
             "profiles_loaded": self._profiles_loaded,
             "golden_vectors_passed": self._golden_vectors_passed,
             "load_error": self._load_error,

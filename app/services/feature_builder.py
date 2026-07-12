@@ -23,6 +23,46 @@ _YIELD_CROP_NAME_MAP = {
     "soya": "Soya",
 }
 
+# Map backend crop ids to names used in crop_features_integrated.csv and
+# calendar_for_eva.csv (cultivo_eva column).
+_EVA_CROP_NAME_MAP = {
+    "aguacate": "Aguacate",
+    "algodon": "Algodón",
+    "cana_panelera": "Caña",
+    "cebolla": "Cebolla de bulbo",
+    "fresa": "Fresa",
+    "pina": "Piña",
+    "soya": "Soya",
+}
+
+
+def _get_crop_features_row(loader: Any, crop_id: str) -> Optional[pd.Series]:
+    """Return the integrated crop feature row for a backend crop id."""
+    features = loader.crop_features
+    if features is None:
+        return None
+    eva_name = _EVA_CROP_NAME_MAP.get(crop_id)
+    if not eva_name:
+        return None
+    rows = features[features["cultivo_eva"] == eva_name]
+    if rows.empty:
+        return None
+    return rows.iloc[0]
+
+
+def _get_calendar_row(loader: Any, crop_id: str) -> Optional[pd.Series]:
+    """Return the EVA calendar row for a backend crop id."""
+    calendar = loader.calendar_for_eva
+    if calendar is None:
+        return None
+    eva_name = _EVA_CROP_NAME_MAP.get(crop_id)
+    if not eva_name:
+        return None
+    rows = calendar[calendar["cultivo_eva"] == eva_name]
+    if rows.empty:
+        return None
+    return rows.iloc[0]
+
 
 def _get_municipality_profile(loader: Any, municipality_id: str) -> Optional[pd.Series]:
     """Return the municipality profile row for a DANE code."""
@@ -274,6 +314,26 @@ def build_yield_features(
         "clima_tipo": str(last.get("clima_tipo", "anual")),
     }
     base.update(historical)
+
+    # Add EcoCrop/FAO auxiliary features used by XGBoost
+    crop_features = _get_crop_features_row(loader, crop_id)
+    if crop_features is not None:
+        aux_fields = [
+            "alt_max",
+            "temp_opt_max",
+            "temp_opt_min",
+            "rain_opt_min",
+            "rain_opt_max",
+            "ph_opt_min",
+            "ph_opt_max",
+            "gmin_dias",
+            "gmax_dias",
+            "cycle_duration_mean",
+        ]
+        for field in aux_fields:
+            val = crop_features.get(field)
+            if val is not None and not pd.isna(val):
+                base[field] = float(val)
 
     # Model-specific extra fields
     # XGB uses aux features; LightGBM does not.
