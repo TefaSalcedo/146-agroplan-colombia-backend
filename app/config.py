@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     groq_models: str = ""
     cerebras_api_key: str = ""
     cerebras_models: str = ""
+    nvidia_api_key: str = ""
+    nvidia_models: str = ""
     llm_timeout_seconds: int = 30
 
     # Admin
@@ -80,6 +82,10 @@ class Settings(BaseSettings):
     @property
     def cerebras_models_list(self) -> list[str]:
         return [m.strip() for m in self.cerebras_models.split(",") if m.strip()]
+
+    @property
+    def nvidia_models_list(self) -> list[str]:
+        return [m.strip() for m in self.nvidia_models.split(",") if m.strip()]
 
     @property
     def effective_migration_url(self) -> str:

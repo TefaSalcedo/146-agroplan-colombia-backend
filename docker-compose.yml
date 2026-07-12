@@ -34,6 +34,8 @@ services:
       - GROQ_MODELS=${GROQ_MODELS:-}
       - CEREBRAS_API_KEY=${CEREBRAS_API_KEY:-}
       - CEREBRAS_MODELS=${CEREBRAS_MODELS:-gpt-oss-120b}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NVIDIA_MODELS=${NVIDIA_MODELS:-meta/llama-3.1-8b-instruct}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-30}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
       - CACHE_TTL_STRATEGY=${CACHE_TTL_STRATEGY:-end_of_month_bogota}

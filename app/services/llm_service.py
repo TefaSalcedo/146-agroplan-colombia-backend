@@ -80,6 +80,17 @@ class LLMService:
             "base_url": "https://api.cerebras.ai/v1",
         }
 
+    def _nvidia_config(self) -> Optional[Dict[str, Any]]:
+        models = settings.nvidia_models_list
+        if not settings.nvidia_api_key or not models:
+            return None
+        return {
+            "provider": "nvidia",
+            "api_key": settings.nvidia_api_key,
+            "models": models,
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        }
+
     def _get_model_pool(self) -> List[Dict[str, Any]]:
         """Return a flat list of all configured (provider, model) entries.
 
@@ -93,6 +104,7 @@ class LLMService:
             self._openrouter_config(),
             self._groq_config(),
             self._cerebras_config(),
+            self._nvidia_config(),
         ]
         configured = [provider for provider in providers if provider]
         primary = settings.llm_provider.lower()
