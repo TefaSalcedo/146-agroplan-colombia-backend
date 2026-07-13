@@ -34,7 +34,11 @@ _FARMER_LANGUAGE_RULES_SPANISH = (
     "4. La temperatura exprésala como 'hace frío', 'hace calor', 'es templado', 'es suave'. "
     "No uses grados Celsius a menos que sea absolutamente necesario.\n"
     "5. La lluvia exprésala como 'llueve poco', 'llueve bastante', 'hay buena lluvia'.\n"
-    "6. Todo en español de Colombia, claro y directo."
+    "6. NO inventes ni uses nombres propios de personas (como 'Juan', 'María', 'Don Pedro'). "
+    "Puedes usar tratamientos amigables como 'Don', 'Doña', 'compañero campesino', 'vecino', "
+    "'compadre', pero nunca les pongas un nombre de pila. Sí puedes usar nombres de lugares, "
+    "municipios, veredas y regiones.\n"
+    "7. Todo en español de Colombia, claro y directo."
 )
 
 
