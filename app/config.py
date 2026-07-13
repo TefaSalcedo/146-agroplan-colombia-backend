@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     # Open-Meteo
     open_meteo_base_url: str = "https://api.open-meteo.com"
     open_meteo_archive_url: str = "https://archive-api.open-meteo.com"
+    open_meteo_max_retries: int = 3
+    open_meteo_retry_backoff_base: float = 1.0
 
     # ML Data & Models
     ml_data_path: str = "./data"

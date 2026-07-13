@@ -111,6 +111,12 @@ class ClimateDataService:
                     municipality.dane_code,
                     exc,
                 )
+                if stored:
+                    logger.info(
+                        "[get_forecast_records] Returning %s stale cached records for %s",
+                        len(stored),
+                        municipality.dane_code,
+                    )
 
         return stored
 
@@ -203,13 +209,35 @@ class ClimateDataService:
             "[get_current_weather] Fetching current weather for %s from Open-Meteo",
             municipality.dane_code,
         )
-        weather_data = self.open_meteo.get_current_weather(
-            lat=municipality.lat,
-            lng=municipality.lng,
-        )
-
-        self._upsert_current_weather(db, municipality.dane_code, weather_data)
-        return weather_data
+        try:
+            weather_data = self.open_meteo.get_current_weather(
+                lat=municipality.lat,
+                lng=municipality.lng,
+            )
+            self._upsert_current_weather(db, municipality.dane_code, weather_data)
+            return weather_data
+        except Exception as exc:
+            logger.warning(
+                "[get_current_weather] Open-Meteo fetch failed for %s: %s",
+                municipality.dane_code,
+                exc,
+            )
+            if cached:
+                logger.info(
+                    "[get_current_weather] Returning stale cached weather for %s (fetched_at=%s)",
+                    municipality.dane_code,
+                    cached.fetched_at,
+                )
+                return {
+                    "temperature": cached.temperature,
+                    "condition": cached.condition,
+                    "humidity": cached.humidity,
+                    "precipitation": cached.precipitation,
+                    "icon": cached.icon,
+                    "source": f"{cached.source}+stale",
+                    "fetched_at": cached.fetched_at.isoformat() if cached.fetched_at else None,
+                }
+            raise
 
     def _upsert_current_weather(
         self,
@@ -349,6 +377,12 @@ class ClimateDataService:
                     municipality.dane_code,
                     exc,
                 )
+                if stored:
+                    logger.info(
+                        "[get_monthly_forecast_records] Returning %s stale cached records for %s",
+                        len(stored),
+                        municipality.dane_code,
+                    )
 
         return stored
 

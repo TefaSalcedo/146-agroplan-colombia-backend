@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, Path, status
-from httpx import HTTPError
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.logger import get_logger
@@ -52,7 +51,7 @@ def get_weather(
             db=db,
             municipality=municipality,
         )
-    except HTTPError as exc:
+    except Exception as exc:
         logger.error("[endpoint] Open-Meteo request failed for municipality_id=%s: %s", municipality_id, exc)
         raise HTTPException(status_code=502, detail="Weather provider unavailable") from exc
 

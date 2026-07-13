@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import get_settings
 from app.logger import get_logger
@@ -323,16 +324,31 @@ class PredictionService:
         payload: dict,
         scope_key: Optional[str] = None,
     ) -> None:
-        """Store a prediction in the cache."""
+        """Store a prediction in the cache using PG upsert.
+
+        Uses ``ON CONFLICT (cache_key) DO UPDATE`` so that a re-computation
+        of the same cache key (e.g. after a previous request stored an
+        expired entry) updates the existing row instead of raising a
+        ``UniqueViolation``.
+        """
         expiry = _compute_cache_expiry()
-        entry = PredictionCache(
+        stmt = pg_insert(PredictionCache).values(
             cache_key=cache_key,
             prediction_type=prediction_type,
             scope_key=scope_key,
             payload=payload,
             expires_at=expiry,
         )
-        db.merge(entry)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_prediction_cache_key",
+            set_={
+                "prediction_type": stmt.excluded.prediction_type,
+                "scope_key": stmt.excluded.scope_key,
+                "payload": stmt.excluded.payload,
+                "expires_at": stmt.excluded.expires_at,
+            },
+        )
+        db.execute(stmt)
         db.commit()
 
     def _log_run(

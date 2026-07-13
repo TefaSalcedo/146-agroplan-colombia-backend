@@ -1,3 +1,5 @@
+import socket
+import time
 import httpx
 from datetime import datetime, date, timezone
 from typing import Optional
@@ -7,6 +9,17 @@ from app.logger import get_logger
 
 settings = get_settings()
 logger = get_logger("app.services.open_meteo")
+
+# Exceptions that indicate a transient network/DNS issue worth retrying.
+_RETRYABLE_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    socket.gaierror,
+    ConnectionError,
+)
 
 
 # WMO Weather Code mapping to frontend icons and conditions
@@ -69,7 +82,52 @@ class OpenMeteoService:
     def __init__(self):
         self.base_url = settings.open_meteo_base_url
         self.archive_url = settings.open_meteo_archive_url
-    
+        self.max_retries = settings.open_meteo_max_retries
+        self.backoff_base = settings.open_meteo_retry_backoff_base
+
+    def _request_with_retry(
+        self,
+        url: str,
+        params: dict,
+        timeout: httpx.Timeout,
+        label: str = "",
+    ) -> httpx.Response:
+        """Execute an HTTP GET with automatic retries on transient network errors.
+
+        Retries on DNS failures, connection errors and timeouts using
+        exponential backoff. HTTP error responses (4xx/5xx) are **not**
+        retried because they usually indicate a permanent client-side issue
+        (bad URL, bad parameters, rate limit, etc.).
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.get(url, params=params)
+                    response.raise_for_status()
+                    return response
+            except _RETRYABLE_EXCEPTIONS as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    delay = self.backoff_base * (2 ** (attempt - 1))
+                    logger.warning(
+                        "[%s] Attempt %s/%s failed (%s). Retrying in %.1fs",
+                        label, attempt, self.max_retries, exc, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        "[%s] All %s attempts exhausted: %s",
+                        label, self.max_retries, exc,
+                    )
+            except httpx.HTTPStatusError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                logger.error("[%s] Non-retryable error: %s", label, exc)
+                raise
+        raise last_exc  # type: ignore[misc]
+
     def _map_weather_code(self, code: int) -> dict:
         """Map WMO weather code to condition and icon"""
         return WEATHER_CODE_MAP.get(code, {"condition": "Desconocido", "icon": "cloud"})
@@ -85,10 +143,10 @@ class OpenMeteoService:
         }
 
         logger.debug("[get_current_weather] Calling Open-Meteo (lat=%s, lng=%s)", lat, lng)
-        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        response = self._request_with_retry(
+            url, params, httpx.Timeout(15.0, connect=5.0), label="get_current_weather",
+        )
+        data = response.json()
 
         current = data.get("current", {})
         weather_code = current.get("weather_code", 0)
@@ -123,11 +181,10 @@ class OpenMeteoService:
         }
 
         logger.debug("[get_historical_weather] Calling Open-Meteo Archive (lat=%s, lng=%s)", lat, lng)
-        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-
+        response = self._request_with_retry(
+            url, params, httpx.Timeout(15.0, connect=5.0), label="get_historical_weather",
+        )
+        data = response.json()
         return data
 
     def get_daily_forecast(
@@ -171,10 +228,10 @@ class OpenMeteoService:
         else:
             raise ValueError("Either days or both start_date and end_date must be provided")
 
-        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        response = self._request_with_retry(
+            url, params, httpx.Timeout(15.0, connect=5.0), label="get_daily_forecast",
+        )
+        data = response.json()
 
         daily = data.get("daily", {})
         dates = daily.get("time", [])
@@ -230,10 +287,10 @@ class OpenMeteoService:
             "[get_monthly_seasonal_forecast] Calling Open-Meteo Seasonal (lat=%s, lng=%s, months=%s)",
             lat, lng, months,
         )
-        with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        response = self._request_with_retry(
+            url, params, httpx.Timeout(20.0, connect=5.0), label="get_monthly_seasonal_forecast",
+        )
+        data = response.json()
 
         monthly = data.get("monthly", {})
         dates = monthly.get("time", [])
@@ -267,15 +324,15 @@ class OpenMeteoService:
         params = {"latitude": lat, "longitude": lng}
         try:
             logger.debug("[get_elevation] Calling Open-Meteo (lat=%s, lng=%s)", lat, lng)
-            with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-                response = client.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
-                elevation = data.get("elevation")
-                if isinstance(elevation, list) and elevation:
-                    elevation = elevation[0]
-                if elevation is not None:
-                    return float(elevation)
+            response = self._request_with_retry(
+                url, params, httpx.Timeout(15.0, connect=5.0), label="get_elevation",
+            )
+            data = response.json()
+            elevation = data.get("elevation")
+            if isinstance(elevation, list) and elevation:
+                elevation = elevation[0]
+            if elevation is not None:
+                return float(elevation)
         except Exception as e:
             logger.warning("[get_elevation] Failed: %s", e)
         return None
@@ -301,10 +358,10 @@ class OpenMeteoService:
                 "[get_annual_climate] Calling Open-Meteo Archive (lat=%s, lng=%s, %s-%s)",
                 lat, lng, start_year, end_year,
             )
-            with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-                response = client.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
+            response = self._request_with_retry(
+                url, params, httpx.Timeout(30.0, connect=5.0), label="get_annual_climate",
+            )
+            data = response.json()
         except Exception as e:
             logger.warning("[get_annual_climate] Failed: %s", e)
             return None
