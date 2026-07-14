@@ -20,14 +20,16 @@ catalog = MunicipalityCatalog()
 logger = get_logger("app.routers.municipalities")
 
 
-def _municipality_to_response(muni: Municipality, db: Session) -> MunicipalityResponse:
-    """Convert a Municipality ORM object to a response, joining department name."""
-    dept = db.query(Department).filter(Department.dane_code == muni.department_dane_code).first()
-    dept_name = dept.name if dept else ""
+def _department_names(db: Session) -> dict[str, str]:
+    return dict(db.query(Department.dane_code, Department.name).all())
+
+
+def _municipality_to_response(muni: Municipality, department_name: str = "") -> MunicipalityResponse:
+    """Convert a Municipality ORM object to a response."""
     return MunicipalityResponse(
         id=muni.dane_code,
         name=muni.name,
-        department=dept_name,
+        department=department_name,
         department_id=muni.department_dane_code,
         lat=muni.lat,
         lng=muni.lng,
@@ -58,7 +60,11 @@ def get_municipalities(
     logger.debug("[endpoint] Querying database for municipalities")
     municipalities = catalog.get_municipalities(db, department=department, department_id=department_id)
     logger.debug("[endpoint] Found %s municipalities", len(municipalities))
-    responses = [_municipality_to_response(m, db) for m in municipalities]
+    department_names = _department_names(db)
+    responses = [
+        _municipality_to_response(m, department_names.get(m.department_dane_code, ""))
+        for m in municipalities
+    ]
     logger.info("[endpoint] GET /municipalities returning %s results", len(responses))
     return MunicipalityListResponse(municipalities=responses, count=len(responses))
 
@@ -172,7 +178,10 @@ def get_nearby_municipality(
         logger.warning("[endpoint] No nearby municipality found: %s", detail)
         raise HTTPException(status_code=404, detail=detail)
 
-    response = _municipality_to_response(municipality, db)
+    response = _municipality_to_response(
+        municipality,
+        _department_names(db).get(municipality.department_dane_code, ""),
+    )
     response.distance_km = round(distance_km or 0, 2)
     logger.info("[endpoint] GET /municipalities/nearby returning municipality_id=%s distance_km=%s", response.id, response.distance_km)
     return response
@@ -206,4 +215,7 @@ def get_municipality(
         logger.warning("[endpoint] Municipality not found: %s", municipality_id)
         raise HTTPException(status_code=404, detail="Municipality not found")
     logger.info("[endpoint] GET /municipalities/{municipality_id} returning municipality_id=%s", municipality_id)
-    return _municipality_to_response(municipality, db)
+    return _municipality_to_response(
+        municipality,
+        _department_names(db).get(municipality.department_dane_code, ""),
+    )

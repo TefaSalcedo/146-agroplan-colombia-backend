@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -265,8 +264,7 @@ class MunicipalityAIGuideService:
     ) -> Dict[str, Any]:
         """Return an AI guide for the municipality.
 
-        Uses an advisory lock to prevent concurrent requests from generating
-        duplicate guides for the same municipality.
+        Releases the database connection before calling the external LLM.
         """
         now = datetime.now(timezone.utc)
         dane = municipality.dane_code
@@ -319,27 +317,8 @@ class MunicipalityAIGuideService:
                 dane,
             )
 
-        # Advisory lock scoped to this municipality to avoid race-condition inserts.
-        lock_key = abs(hash(f"municipality_ai_guide:{dane}")) % (2**31)
-        logger.debug("[get_or_generate] Acquiring advisory lock key=%s", lock_key)
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
-
-        # Double-check after acquiring the lock.
-        cached = _fetch_guide()
-        if cached and not force:
-            if cached.expires_at and cached.expires_at > now:
-                logger.info(
-                    "[get_or_generate] Cache hit after lock for municipality=%s (expires_at=%s)",
-                    dane,
-                    cached.expires_at,
-                )
-                return self._build_response(municipality, cached, cached=True)
-            logger.info(
-                "[get_or_generate] Cached AI guide expired after lock for municipality=%s, regenerating",
-                dane,
-            )
-
         context = self._build_context(db, municipality)
+        db.rollback()
         llm_result = self.llm_service.generate_municipality_ai_guide(context)
 
         tokens_in = llm_result.get("tokens_in")

@@ -8,7 +8,6 @@ one is generated and persisted.
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,8 +41,7 @@ class CropRecommendationCacheService:
         When LLM is disabled, return an empty response without reading or
         writing the recommendation cache.
 
-        Uses an advisory lock to prevent concurrent requests from generating
-        duplicate recommendations for the same crop-municipality pair.
+        Releases the database connection before calling the external LLM.
         """
         now = datetime.now(timezone.utc)
         dane = municipality.dane_code
@@ -103,27 +101,12 @@ class CropRecommendationCacheService:
                 dane,
             )
 
-        # Advisory lock scoped to this crop-municipality pair.
-        lock_key = abs(hash(f"crop_recommendation:{crop_id}:{dane}")) % (2**31)
-        logger.debug("[get_or_generate] Acquiring advisory lock key=%s", lock_key)
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
-
-        # Double-check after acquiring the lock.
-        cached = _fetch_recommendation()
-        if cached and cached.expires_at and cached.expires_at > now:
-            logger.info(
-                "[get_or_generate] Cache hit after lock crop=%s municipality=%s (expires_at=%s)",
-                crop_id,
-                dane,
-                cached.expires_at,
-            )
-            return self._build_response(crop, municipality, cached, cached=True)
-
         context = self.prediction_service.get_crop_recommendation_context(
             db,
             crop_id=crop_id,
             municipality_id=dane,
         )
+        db.rollback()
         if not context:
             logger.error("[get_or_generate] Could not build recommendation context")
             return {

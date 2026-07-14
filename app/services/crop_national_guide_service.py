@@ -126,6 +126,7 @@ class CropNationalGuideService:
             )
 
         crop_data = self._crop_to_dict(crop)
+        db.rollback()
         llm_result = self.llm_service.generate_national_crop_guide(crop_data)
 
         tokens_in = llm_result.get("tokens_in")
