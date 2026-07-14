@@ -182,6 +182,20 @@ class LLMService:
 
         return payload
 
+    @staticmethod
+    def _text_or_empty(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    @staticmethod
+    def _provider_error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+            error = payload.get("error", payload) if isinstance(payload, dict) else payload
+            detail = error.get("message", error) if isinstance(error, dict) else error
+        except ValueError:
+            detail = response.text
+        return str(detail).strip().replace("\n", " ")[:500] or "No error detail returned"
+
     def _call_provider(
         self,
         provider: Dict[str, Any],
@@ -220,7 +234,13 @@ class LLMService:
                 if response.status_code >= 500:
                     return {"error": f"server_error_{response.status_code}", "status": response.status_code}
 
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    detail = self._provider_error_detail(response)
+                    return {
+                        "error": f"http_{response.status_code}: {detail}",
+                        "status": response.status_code,
+                    }
+
                 data = response.json()
 
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -644,7 +664,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            raw_content = result.get("content", "").strip()
+            raw_content = self._text_or_empty(result.get("content"))
             if not raw_content:
                 logger.warning(
                     "[generate_national_crop_guide] Provider %s/%s returned empty content",
@@ -672,7 +692,7 @@ class LLMService:
                 )
                 continue
 
-            summary = parsed.get("summary", "").strip()
+            summary = self._text_or_empty(parsed.get("summary"))
             sections = parsed.get("sections", [])
             if not isinstance(sections, list):
                 sections = []
@@ -829,7 +849,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            raw_content = result.get("content", "").strip()
+            raw_content = self._text_or_empty(result.get("content"))
             if not raw_content:
                 logger.warning(
                     "[generate_municipality_ai_guide] Provider %s/%s returned empty content",
@@ -867,7 +887,7 @@ class LLMService:
             )
 
             return {
-                "summary": parsed.get("summary", "").strip(),
+                "summary": self._text_or_empty(parsed.get("summary")),
                 "alternative_crops": self._normalize_list(parsed.get("alternative_crops", [])),
                 "farming_systems": self._normalize_list(parsed.get("farming_systems", [])),
                 "soil_and_fertilizer": self._normalize_list(parsed.get("soil_and_fertilizer", [])),
