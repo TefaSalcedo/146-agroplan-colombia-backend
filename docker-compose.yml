@@ -15,6 +15,7 @@ services:
       - ML_DATA_PATH=./data
       - ML_MODELS_PATH=./models
       - API_V1_PREFIX=/api/v1
+      - MAX_REQUEST_BODY_BYTES=${MAX_REQUEST_BODY_BYTES:-65536}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
       - ENABLE_CLIMATE_SYNC=${ENABLE_CLIMATE_SYNC:-true}
       - CLIMATE_SYNC_HOUR=${CLIMATE_SYNC_HOUR:-3}

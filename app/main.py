@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.middleware.rate_limit import GeneralRateLimitMiddleware
+from app.middleware.rate_limit import GeneralRateLimitMiddleware, RequestBodySizeLimitMiddleware
 from app.logger import configure_logging, get_logger
 from app.routers import (
     municipalities,
@@ -92,6 +92,7 @@ app = FastAPI(
 )
 
 app.add_middleware(GeneralRateLimitMiddleware)
+app.add_middleware(RequestBodySizeLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -155,8 +156,8 @@ async def readiness():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         components.append(ComponentStatus(name="database", ready=True))
-    except Exception as e:
-        components.append(ComponentStatus(name="database", ready=False, detail=str(e)))
+    except Exception:
+        components.append(ComponentStatus(name="database", ready=False, detail="Database unavailable"))
 
     # Check ML models
     components.append(

@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # API
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
+    max_request_body_bytes: int = 65_536
 
     # Rate limiting
     rate_limit_enabled: bool = True
@@ -66,7 +67,7 @@ class Settings(BaseSettings):
     enable_mock_predictor: bool = False  # True allows MockPredictor fallback
 
     # Observability / Debug logging
-    log_level: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     log_format: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
     model_config = SettingsConfigDict(
