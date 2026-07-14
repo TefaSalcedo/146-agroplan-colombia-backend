@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -186,33 +188,35 @@ class CropNationalGuideService:
         generated_at = now
         expires_at = now + timedelta(days=GUIDE_TTL_DAYS)
 
-        if cached:
-            cached.content = content
-            cached.generated_at = generated_at
-            cached.expires_at = expires_at
-            cached.provider = llm_result.get("provider")
-            cached.model = llm_result.get("model")
-            cached.tokens_in = tokens_in
-            cached.tokens_out = tokens_out
-            cached.latency_ms = llm_result.get("latency_ms")
-            cached.version = GUIDE_VERSION
-        else:
-            cached = CropNationalGuide(
-                crop_id=crop.id,
-                content=content,
-                generated_at=generated_at,
-                expires_at=expires_at,
-                provider=llm_result.get("provider"),
-                model=llm_result.get("model"),
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                latency_ms=llm_result.get("latency_ms"),
-                version=GUIDE_VERSION,
-            )
-            db.add(cached)
-
+        stmt = pg_insert(CropNationalGuide).values(
+            crop_id=crop.id,
+            content=content,
+            generated_at=generated_at,
+            expires_at=expires_at,
+            provider=llm_result.get("provider"),
+            model=llm_result.get("model"),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=llm_result.get("latency_ms"),
+            version=GUIDE_VERSION,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_crop_national_guide_crop",
+            set_={
+                "content": stmt.excluded.content,
+                "generated_at": stmt.excluded.generated_at,
+                "expires_at": stmt.excluded.expires_at,
+                "provider": stmt.excluded.provider,
+                "model": stmt.excluded.model,
+                "tokens_in": stmt.excluded.tokens_in,
+                "tokens_out": stmt.excluded.tokens_out,
+                "latency_ms": stmt.excluded.latency_ms,
+                "version": stmt.excluded.version,
+                "updated_at": func.now(),
+            },
+        ).returning(CropNationalGuide)
+        cached = db.execute(stmt).scalar_one()
         db.commit()
-        db.refresh(cached)
         logger.info(
             "[get_or_generate] Saved national guide for crop=%s (expires_at=%s)",
             crop.id,
