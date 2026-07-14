@@ -133,6 +133,25 @@ def enforce_rate_limit(endpoint: Callable) -> Callable:
     return sync_wrapper
 
 
+class RequestBodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies that exceed the configured Content-Length limit."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                body_size = int(content_length)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
+
+            if body_size > get_settings().max_request_body_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body exceeds the allowed size"},
+                )
+        return await call_next(request)
+
+
 class GeneralRateLimitMiddleware(BaseHTTPMiddleware):
     """Apply the general limit to requests not handled by a decorated endpoint."""
 

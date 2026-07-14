@@ -26,3 +26,14 @@ def test_ip_rate_limiter_separates_ips_and_groups():
     assert limiter.check("127.0.0.2", "general", limit=1, window_seconds=60)[0] is True
     assert limiter.check("127.0.0.1", "ml_llm", limit=1, window_seconds=60)[0] is True
     assert limiter.check("127.0.0.1", "general", limit=1, window_seconds=60)[0] is False
+
+
+def test_request_body_size_limit_rejects_oversized_payload(client):
+    response = client.post(
+        "/api/v1/calendars/predict-batch",
+        content=b"x" * 65_537,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body exceeds the allowed size"}
