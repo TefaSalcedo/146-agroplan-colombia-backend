@@ -20,6 +20,7 @@ class _Session:
         self.guide = guide
         self.executed_statement = None
         self.committed = False
+        self.rolled_back = False
 
     def query(self, *_args):
         return self
@@ -36,6 +37,9 @@ class _Session:
 
     def commit(self):
         self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 def test_generation_persists_national_guide_with_atomic_upsert():
@@ -89,6 +93,7 @@ def test_generation_persists_national_guide_with_atomic_upsert():
 
     statement = str(session.executed_statement.compile(dialect=postgresql.dialect()))
     assert "ON CONFLICT ON CONSTRAINT uq_crop_national_guide_crop DO UPDATE" in statement
+    assert session.rolled_back is True
     assert session.committed is True
     assert response["status"] == "success"
     assert response["summary"] == "Guía de Piña"

@@ -1,4 +1,60 @@
 """Tests for municipality and department endpoints."""
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.routers.municipalities import get_municipalities
+
+
+class _DepartmentQuery:
+    def all(self):
+        return [("05", "ANTIOQUIA"), ("15", "BOYACÁ")]
+
+
+class _Session:
+    def __init__(self):
+        self.query_count = 0
+
+    def query(self, *_args):
+        self.query_count += 1
+        return _DepartmentQuery()
+
+
+def test_list_municipalities_loads_departments_once():
+    municipalities = [
+        SimpleNamespace(
+            dane_code="05001",
+            name="MEDELLÍN",
+            department_dane_code="05",
+            lat=6.2442,
+            lng=-75.5812,
+            altitude=1495,
+            avg_temperature=22.5,
+            precipitation=1685.0,
+        ),
+        SimpleNamespace(
+            dane_code="15022",
+            name="IZA",
+            department_dane_code="15",
+            lat=5.612,
+            lng=-72.981,
+            altitude=2538,
+            avg_temperature=12.0,
+            precipitation=950.0,
+        ),
+    ]
+    session = _Session()
+
+    with patch(
+        "app.routers.municipalities.catalog.get_municipalities",
+        return_value=municipalities,
+    ):
+        response = get_municipalities(db=session)
+
+    assert session.query_count == 1
+    assert [municipality.department for municipality in response.municipalities] == [
+        "ANTIOQUIA",
+        "BOYACÁ",
+    ]
 
 
 def test_list_municipalities(client):
