@@ -6,6 +6,7 @@ with data intact and explanation fields set to null.
 """
 
 import json
+import re
 import threading
 import time
 from typing import Optional, Dict, Any, List
@@ -153,7 +154,8 @@ class LLMService:
             return base_prompt
         return (
             f"{base_prompt}\n\n"
-            "Responde siempre en español."
+            "Responde siempre en español. Entrega únicamente la respuesta final para el usuario; "
+            "no muestres razonamiento, análisis, pasos internos ni etiquetas como <think>."
         )
 
     def _build_chat_request(
@@ -184,7 +186,12 @@ class LLMService:
 
     @staticmethod
     def _text_or_empty(value: Any) -> str:
-        return value.strip() if isinstance(value, str) else ""
+        if not isinstance(value, str):
+            return ""
+        content = re.sub(r"<think\b[^>]*>.*?</think\s*>", "", value, flags=re.IGNORECASE | re.DOTALL)
+        if re.search(r"</?think\b", content, flags=re.IGNORECASE):
+            return ""
+        return content.strip()
 
     @staticmethod
     def _provider_error_detail(response: httpx.Response) -> str:
@@ -409,7 +416,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            explanation = (result.get("content") or "").strip()
+            explanation = self._text_or_empty(result.get("content"))
             logger.info("[generate_explanation] Provider %s/%s succeeded (latency_ms=%s, tokens_in=%s, tokens_out=%s)", provider["provider"], model, latency_ms, result.get("tokens_in"), result.get("tokens_out"))
 
             if explanation:
@@ -535,7 +542,7 @@ class LLMService:
                 continue
 
             latency_ms = int((time.time() - start) * 1000)
-            text = (result.get("content") or "").strip()
+            text = self._text_or_empty(result.get("content"))
             if not text:
                 logger.warning(
                     "[generate_crop_recommendation] Provider %s/%s returned empty content",
@@ -701,8 +708,8 @@ class LLMService:
             for sec in sections:
                 if isinstance(sec, dict) and sec.get("title") and sec.get("content"):
                     normalized_sections.append({
-                        "title": str(sec["title"]).strip(),
-                        "content": str(sec["content"]).strip(),
+                        "title": self._text_or_empty(sec["title"]),
+                        "content": self._text_or_empty(sec["content"]),
                     })
 
             logger.info(
@@ -922,7 +929,10 @@ class LLMService:
         cleaned = []
         for item in value:
             if isinstance(item, dict):
-                cleaned.append({str(k): str(v).strip() for k, v in item.items()})
+                cleaned.append({
+                    str(k): LLMService._text_or_empty(v) if isinstance(v, str) else str(v).strip()
+                    for k, v in item.items()
+                })
         return cleaned
 
     def is_configured(self) -> bool:
